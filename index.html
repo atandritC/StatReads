@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StatReads</title>
+    <link id="favicon" rel="icon" type="image/png" href="./assets/tab-icon.png" />
+    <link rel="shortcut icon" type="image/png" href="./assets/tab-icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="uploadView" class="landing view is-visible">
+      <header class="brand">
+        <div class="brand-main">
+          <img src="./assets/logo.png" alt="StatReads logo" class="brand-logo" />
+          <div class="brand-copy">
+            <h1>StatReads</h1>
+            <p>YOUR READING JOURNEY AT A GLANCE</p>
+          </div>
+        </div>
+      </header>
+
+      <p class="intro">
+        Welcome to StatReads, to get your stats please export your data from
+        StoryGraph or Goodreads and upload the CSV file.
+      </p>
+
+      <section class="uploader-section">
+        <label for="csvInput" id="dropzone" class="dropzone" tabindex="0">
+          <span id="dropzoneText">
+            Drag 'n' drop CSV file here, or click to select file
+          </span>
+        </label>
+        <input id="csvInput" type="file" accept=".csv,text/csv" />
+      </section>
+    </main>
+
+    <section id="confirmView" class="confirm view">
+      <header class="brand">
+        <div class="brand-main">
+          <img src="./assets/logo.png" alt="StatReads logo" class="brand-logo" />
+          <div class="brand-copy">
+            <h1>StatReads</h1>
+            <p>YOUR READING JOURNEY AT A GLANCE</p>
+          </div>
+        </div>
+      </header>
+
+      <p class="confirm-label">Selected File:</p>
+      <h2 id="selectedFileName" class="selected-file-name">-</h2>
+
+      <div class="confirm-actions">
+        <button id="changeFileButton" type="button" class="secondary-button">Choose another file</button>
+        <button id="confirmUploadButton" type="button" class="confirm-button">Click here to confirm</button>
+      </div>
+      <p id="confirmError" class="confirm-error" aria-live="polite"></p>
+    </section>
+
+    <section id="dashboardView" class="dashboard view">
+      <header class="dashboard-hero">
+        <div class="dashboard-brand">
+          <img src="./assets/logo.png" alt="StatReads logo" class="hero-logo" />
+          <div class="dashboard-copy">
+            <h1>StatReads</h1>
+            <p class="hero-subtitle">YOUR READING STATS AT A GLANCE</p>
+          </div>
+        </div>
+        <p id="sourceBadge" class="source-badge"></p>
+      </header>
+
+      <section class="stats-strip">
+        <article class="stat-card">
+          <p id="statBooks" class="stat-value">0</p>
+          <p class="stat-label">BOOKS</p>
+        </article>
+        <article class="stat-card">
+          <p id="statAuthors" class="stat-value">--</p>
+          <p class="stat-label">AUTHORS</p>
+        </article>
+        <article class="stat-card">
+          <p id="statCountries" class="stat-value">--</p>
+          <p class="stat-label">COUNTRIES</p>
+        </article>
+        <article class="stat-card">
+          <p id="statAvgRating" class="stat-value">--</p>
+          <p class="stat-label">AVERAGE RATING</p>
+        </article>
+        <article class="stat-card">
+          <p id="statPages" class="stat-value">--</p>
+          <p class="stat-label">PAGES</p>
+        </article>
+      </section>
+
+      <section class="insights-section">
+        <div class="insights-top">
+          <div class="line-heading">
+            <span>BY YEAR</span>
+            <span class="line-divider"></span>
+          </div>
+          <nav class="insights-tabs" aria-label="Dashboard section tabs">
+            <button id="booksTab" type="button" class="tab-button is-active">BOOKS</button>
+            <button id="ratingsTab" type="button" class="tab-button">RATINGS</button>
+          </nav>
+        </div>
+
+        <div class="year-chart-wrap">
+          <div id="yearChart" class="year-chart">
+            <p class="section-loading">Upload and confirm CSV to load chart.</p>
+          </div>
+          <div class="year-axis">
+            <span id="yearMin">--</span>
+            <span id="yearMax">--</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="decades-section">
+        <div class="line-heading">
+          <span>HIGHEST RATED DECADES</span>
+          <span class="line-divider"></span>
+        </div>
+        <div id="decadesList" class="decades-list">
+          <p class="section-loading">Upload and confirm CSV to load decades.</p>
+        </div>
+      </section>
+
+      <section class="taxonomy-section">
+        <div class="insights-top">
+          <div class="line-heading">
+            <span>GENRES &amp; COUNTRIES</span>
+            <span class="line-divider"></span>
+          </div>
+          <nav class="insights-tabs" aria-label="Genre and country tabs">
+            <button id="taxonomyMostReadTab" type="button" class="tab-button is-active">MOST READ</button>
+            <button id="taxonomyHighestRatedTab" type="button" class="tab-button">HIGHEST RATED</button>
+          </nav>
+        </div>
+
+        <div class="taxonomy-grid">
+          <div>
+            <h3 class="taxonomy-column-title">GENRES</h3>
+            <div id="genreList" class="taxonomy-list">
+              <p class="section-loading">Upload and confirm CSV to load genres.</p>
+            </div>
+          </div>
+          <div>
+            <h3 class="taxonomy-column-title">COUNTRY</h3>
+            <div id="countryList" class="taxonomy-list">
+              <p class="section-loading">Upload and confirm CSV to load countries.</p>
+            </div>
+          </div>
+        </div>
+
+        <p id="taxonomyNote" class="taxonomy-note">Genres and countries with at least 3 rated books are included.</p>
+      </section>
+
+      <section class="themes-section">
+        <div class="insights-top">
+          <div class="line-heading">
+            <span>THEMES</span>
+            <span class="line-divider"></span>
+          </div>
+          <nav class="insights-tabs" aria-label="Themes tabs">
+            <button id="themesMostReadTab" type="button" class="tab-button is-active">MOST READ</button>
+            <button id="themesHighestRatedTab" type="button" class="tab-button">HIGHEST RATED</button>
+          </nav>
+        </div>
+        <div id="themeList" class="taxonomy-list">
+          <p class="section-loading">Upload and confirm CSV to load themes.</p>
+        </div>
+        <p id="themesNote" class="taxonomy-note">Themes with at least 3 rated books are included.</p>
+      </section>
+
+      <section class="collections-section">
+        <div class="insights-top">
+          <div class="line-heading">
+            <span>COLLECTIONS</span>
+            <span class="line-divider"></span>
+          </div>
+          <nav class="insights-tabs" aria-label="Collections tabs">
+            <button id="collectionsCompleteTab" type="button" class="tab-button is-active">COMPLETE</button>
+            <button id="collectionsAlmostTab" type="button" class="tab-button">ALMOST COMPLETE</button>
+          </nav>
+        </div>
+        <div id="collectionsGrid" class="collections-grid">
+          <p class="section-loading">Upload and confirm CSV to view collections.</p>
+        </div>
+      </section>
+
+      <section class="metadata-section">
+        <div class="line-heading">
+          <span>METADATA SOURCES</span>
+          <span class="line-divider"></span>
+        </div>
+        <div class="metadata-actions">
+          <p class="metadata-help-text">APIs are not always reliable, so use overrides when any book metadata is missing or incorrect.</p>
+        </div>
+        <div id="metadataSourcesWrap" class="metadata-wrap">
+          <p class="section-loading">Upload and confirm CSV to view metadata source tags.</p>
+        </div>
+        <form id="overrideEditor" class="override-editor" autocomplete="off">
+          <h3 id="overrideEditorTitle">Override Metadata</h3>
+          <input id="overrideBookKey" type="hidden" />
+          <div class="override-grid">
+            <label>
+              Published Year
+              <input id="overrideYear" type="number" min="1000" max="2100" />
+            </label>
+            <label>
+              Country
+              <input id="overrideCountries" type="text" />
+            </label>
+            <label>
+              Genres (comma separated)
+              <input id="overrideGenres" type="text" />
+            </label>
+            <label class="override-full-width">
+              Cover URL
+              <input id="overrideCoverUrl" type="url" placeholder="https://..." />
+            </label>
+          </div>
+          <div class="override-actions">
+            <button id="saveOverrideBtn" type="submit" class="confirm-button">Save Override</button>
+            <button id="clearOverrideBtn" type="button" class="secondary-button">Clear Override</button>
+            <button id="cancelOverrideBtn" type="button" class="secondary-button">Cancel</button>
+          </div>
+        </form>
+        <div class="metadata-actions metadata-actions-end">
+          <button id="exportOverridesBtn" type="button" class="secondary-button small-action-btn">Export Overrides JSON</button>
+        </div>
+      </section>
+    </section>
+
+    <script src="./script.js"></script>
+  </body>
+</html>
