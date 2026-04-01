@@ -43,8 +43,6 @@ A client-side web app that transforms your StoryGraph or Goodreads CSV export in
 ![Genres & Countries](screenshots/genres-countries.png)
 ![Collections](screenshots/collections.png)
 
-*(Add actual screenshots in a `screenshots/` folder)*
-
 ## 🏗 Architecture
 
 - **Multi-view SPA** — Three views (Upload → Confirm → Dashboard) managed via CSS class toggling, no routing library needed
