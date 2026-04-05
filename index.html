@@ -58,14 +58,21 @@
 
     <section id="dashboardView" class="dashboard view">
       <header class="dashboard-hero">
-        <div class="dashboard-brand">
-          <img src="./assets/logo.png" alt="StatReads logo" class="hero-logo" />
-          <div class="dashboard-copy">
-            <h1>StatReads</h1>
-            <p class="hero-subtitle">YOUR READING STATS AT A GLANCE</p>
+        <div class="hero-bars hero-bars-left" id="heroBarsLeft"></div>
+        <div class="hero-center">
+          <h1 class="hero-title">A Life in Books</h1>
+          <div class="hero-badge-row">
+            <img src="./assets/logo.png" alt="StatReads" class="hero-icon" />
+            <p id="sourceBadge" class="source-badge"></p>
+          </div>
+          <div id="loadingWrap" class="loading-wrap" style="display:none">
+            <div class="loading-bar-track">
+              <div id="loadingBarFill" class="loading-bar-fill"></div>
+            </div>
+            <p id="loadingText" class="loading-text">Fetching metadata…</p>
           </div>
         </div>
-        <p id="sourceBadge" class="source-badge"></p>
+        <div class="hero-bars hero-bars-right" id="heroBarsRight"></div>
       </header>
 
       <section class="stats-strip">
@@ -155,18 +162,21 @@
       </section>
 
       <section class="themes-section">
-        <div class="insights-top">
-          <div class="line-heading">
-            <span>THEMES</span>
-            <span class="line-divider"></span>
-          </div>
-          <nav class="insights-tabs" aria-label="Themes tabs">
-            <button id="themesMostReadTab" type="button" class="tab-button is-active">MOST READ</button>
-            <button id="themesHighestRatedTab" type="button" class="tab-button">HIGHEST RATED</button>
-          </nav>
+        <div class="line-heading">
+          <span>THEMES</span>
+          <span class="line-divider"></span>
         </div>
-        <div id="themeList" class="taxonomy-list">
-          <p class="section-loading">Upload and confirm CSV to load themes.</p>
+        <div class="themes-pies">
+          <div class="theme-pie-wrap">
+            <h3 class="theme-pie-title">MOST READ</h3>
+            <canvas id="themePieMostRead" width="320" height="320"></canvas>
+            <div id="themeLegendMostRead" class="theme-legend"></div>
+          </div>
+          <div class="theme-pie-wrap">
+            <h3 class="theme-pie-title">HIGHEST RATED</h3>
+            <canvas id="themePieHighestRated" width="320" height="320"></canvas>
+            <div id="themeLegendHighestRated" class="theme-legend"></div>
+          </div>
         </div>
         <p id="themesNote" class="taxonomy-note">Themes with at least 3 rated books are included.</p>
       </section>
@@ -186,6 +196,51 @@
           <p class="section-loading">Upload and confirm CSV to view collections.</p>
         </div>
       </section>
+
+      <section class="most-read-section">
+        <div class="line-heading">
+          <span>MOST READ</span>
+          <span class="line-divider"></span>
+        </div>
+        <div id="mostReadGrid" class="most-read-grid">
+          <p class="section-loading">Upload and confirm CSV to view most read books.</p>
+        </div>
+      </section>
+
+      <section class="authors-section">
+        <div class="insights-top">
+          <div class="line-heading">
+            <span>AUTHORS</span>
+            <span class="line-divider"></span>
+          </div>
+          <nav class="insights-tabs" aria-label="Authors tabs">
+            <button id="authorsMostReadTab" type="button" class="tab-button is-active">MOST READ</button>
+            <button id="authorsHighestRatedTab" type="button" class="tab-button">HIGHEST RATED</button>
+          </nav>
+        </div>
+        <div id="authorsGrid" class="authors-grid">
+          <p class="section-loading">Upload and confirm CSV to view authors.</p>
+        </div>
+        <div class="authors-more-wrap">
+          <button id="authorsShowMore" type="button" class="show-more-btn" style="display:none">SHOW MORE</button>
+        </div>
+      </section>
+
+      <div id="authorPhotoOverlay" class="author-photo-overlay" style="display:none">
+        <div class="author-photo-popup">
+          <h4 id="authorPopupTitle">Override Author Photo</h4>
+          <input id="authorPopupKey" type="hidden" />
+          <label class="author-popup-label">
+            Photo URL (HTTPS)
+            <input id="authorPopupUrl" type="url" placeholder="https://..." />
+          </label>
+          <div class="author-popup-actions">
+            <button id="authorPopupSave" type="button" class="confirm-button">Save</button>
+            <button id="authorPopupClear" type="button" class="secondary-button">Clear</button>
+            <button id="authorPopupCancel" type="button" class="secondary-button">Cancel</button>
+          </div>
+        </div>
+      </div>
 
       <section class="metadata-section">
         <div class="line-heading">
@@ -214,6 +269,10 @@
               Genres (comma separated)
               <input id="overrideGenres" type="text" />
             </label>
+            <label>
+              Series Name
+              <input id="overrideSeriesName" type="text" placeholder="e.g. Harry Potter" />
+            </label>
             <label class="override-full-width">
               Cover URL
               <input id="overrideCoverUrl" type="url" placeholder="https://..." />
@@ -221,6 +280,7 @@
           </div>
           <div class="override-actions">
             <button id="saveOverrideBtn" type="submit" class="confirm-button">Save Override</button>
+            <button id="submitOverrideBtn" type="button" class="secondary-button">Submit to Community</button>
             <button id="clearOverrideBtn" type="button" class="secondary-button">Clear Override</button>
             <button id="cancelOverrideBtn" type="button" class="secondary-button">Cancel</button>
           </div>

@@ -35,6 +35,11 @@ const themesNote = document.getElementById("themesNote");
 const collectionsCompleteTab = document.getElementById("collectionsCompleteTab");
 const collectionsAlmostTab = document.getElementById("collectionsAlmostTab");
 const collectionsGrid = document.getElementById("collectionsGrid");
+const authorsGrid = document.getElementById("authorsGrid");
+const authorsMostReadTab = document.getElementById("authorsMostReadTab");
+const authorsHighestRatedTab = document.getElementById("authorsHighestRatedTab");
+const authorsShowMore = document.getElementById("authorsShowMore");
+const mostReadGrid = document.getElementById("mostReadGrid");
 const metadataSourcesWrap = document.getElementById("metadataSourcesWrap");
 const exportOverridesBtn = document.getElementById("exportOverridesBtn");
 const overrideEditor = document.getElementById("overrideEditor");
@@ -43,8 +48,10 @@ const overrideBookKey = document.getElementById("overrideBookKey");
 const overrideYear = document.getElementById("overrideYear");
 const overrideCountries = document.getElementById("overrideCountries");
 const overrideGenres = document.getElementById("overrideGenres");
+const overrideSeriesName = document.getElementById("overrideSeriesName");
 const overrideCoverUrl = document.getElementById("overrideCoverUrl");
 const saveOverrideBtn = document.getElementById("saveOverrideBtn");
+const submitOverrideBtn = document.getElementById("submitOverrideBtn");
 const clearOverrideBtn = document.getElementById("clearOverrideBtn");
 const cancelOverrideBtn = document.getElementById("cancelOverrideBtn");
 
@@ -54,11 +61,54 @@ let currentYearMode = "books";
 let currentTaxonomyMode = "most-read";
 let currentThemesMode = "most-read";
 let currentCollectionsMode = "complete";
+let currentAuthorsMode = "most-read";
+let latestAuthorRows = [];
+let authorsVisible = 10;
 let latestSeriesData = [];
 
 // Optional manual metadata overrides (title or ISBN key).
-const METADATA_OVERRIDES = {};
 const OVERRIDES_STORAGE_KEY = "statreads_metadata_overrides_v1";
+const AUTHOR_OVERRIDES_KEY = "statreads_author_overrides_v1";
+const META_CACHE_KEY = "statreads_meta_cache_v1";
+
+const readMetaCache = () => {
+  try {
+    const raw = localStorage.getItem(META_CACHE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch { return {}; }
+};
+
+const writeMetaCache = (cache) => {
+  try {
+    localStorage.setItem(META_CACHE_KEY, JSON.stringify(cache));
+  } catch { /* storage full — silently skip */ }
+};
+
+const cacheKeyForBook = (book) => {
+  const parts = [book.isbn || "", book.title || "", book.authorHint || ""];
+  return parts.join("|").toLowerCase().trim();
+};
+
+const CACHEABLE_FIELDS = [
+  "authors", "publishedYear", "apiRating", "coverUrl", "genres",
+  "countries", "pageCount", "rawSubjects", "seriesName", "seriesNumber", "_sources",
+];
+
+const bookToCache = (book) => {
+  const entry = {};
+  CACHEABLE_FIELDS.forEach((f) => { if (book[f] !== undefined) entry[f] = book[f]; });
+  entry._cachedAt = Date.now();
+  return entry;
+};
+
+const applyCacheToBook = (merged, cached) => {
+  CACHEABLE_FIELDS.forEach((f) => {
+    if (cached[f] !== undefined) merged[f] = cached[f];
+  });
+  merged._fromCache = true;
+};
+let sharedOverrides = {};
 let runtimeOverrides = {};
 
 const setVisibleView = (view) => {
@@ -240,15 +290,26 @@ const sourceTag = (value) => {
   return `<span class="source-tag ${normalized}">${normalized}</span>`;
 };
 
+const loadSharedOverrides = async () => {
+  try {
+    const resp = await fetch("./shared-overrides.json");
+    if (!resp.ok) return {};
+    const data = await resp.json();
+    return sanitizeOverridesMap(data);
+  } catch {
+    return {};
+  }
+};
+
 const readOverridesFromStorage = () => {
   try {
     const raw = localStorage.getItem(OVERRIDES_STORAGE_KEY);
-    if (!raw) return { ...METADATA_OVERRIDES };
+    if (!raw) return {};
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...METADATA_OVERRIDES };
-    return { ...METADATA_OVERRIDES, ...parsed };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed;
   } catch {
-    return { ...METADATA_OVERRIDES };
+    return {};
   }
 };
 
@@ -260,13 +321,96 @@ const persistOverridesToStorage = () => {
   }
 };
 
+const readAuthorOverrides = () => {
+  try {
+    const raw = localStorage.getItem(AUTHOR_OVERRIDES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
+  } catch { return {}; }
+};
+
+const persistAuthorOverrides = () => {
+  try {
+    localStorage.setItem(AUTHOR_OVERRIDES_KEY, JSON.stringify(authorOverrides, null, 2));
+  } catch { /* storage full */ }
+};
+
+let authorOverrides = readAuthorOverrides();
+
+const ALLOWED_COVER_HOSTS = [
+  "covers.openlibrary.org",
+  "books.google.com",
+  "images-na.ssl-images-amazon.com",
+  "m.media-amazon.com",
+  "images-eu.ssl-images-amazon.com",
+  "upload.wikimedia.org",
+  "commons.wikimedia.org",
+  "i.gr-assets.com",
+  "s.gr-assets.com",
+  "upload.wikimedia.org",
+  "cdn.kobo.com",
+  "prodimage.images-bn.com",
+  "pictures.abebooks.com",
+];
+
+const isAllowedCoverUrl = (url) => {
+  if (!url) return true;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    return ALLOWED_COVER_HOSTS.some((h) => parsed.hostname === h || parsed.hostname.endsWith("." + h));
+  } catch {
+    return false;
+  }
+};
+
+const sanitizeText = (value, maxLen = 200) => {
+  if (!value || typeof value !== "string") return "";
+  return value.replace(/<[^>]*>/g, "").replace(/[^\p{L}\p{N}\p{P}\p{Z}]/gu, "").trim().slice(0, maxLen);
+};
+
+const sanitizeOverride = (entry) => {
+  if (!entry || typeof entry !== "object") return null;
+  const clean = {};
+  if (entry.publishedYear) {
+    const y = Number(entry.publishedYear);
+    if (Number.isFinite(y) && y >= 1000 && y <= 2100) clean.publishedYear = y;
+  }
+  if (entry.coverUrl) {
+    if (isAllowedCoverUrl(entry.coverUrl)) clean.coverUrl = entry.coverUrl;
+  }
+  if (entry.seriesName) clean.seriesName = sanitizeText(entry.seriesName, 120);
+  if (Array.isArray(entry.countries)) {
+    clean.countries = entry.countries.map((c) => sanitizeText(c, 80)).filter(Boolean);
+  }
+  if (Array.isArray(entry.genres)) {
+    clean.genres = entry.genres.map((g) => sanitizeText(g, 80)).filter(Boolean);
+  }
+  return Object.keys(clean).length > 0 ? clean : null;
+};
+
+const sanitizeOverridesMap = (raw) => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const safeKey = sanitizeText(key, 300);
+    if (!safeKey) continue;
+    const cleaned = sanitizeOverride(value);
+    if (cleaned) out[safeKey] = cleaned;
+  }
+  return out;
+};
+
 const keyForBook = (book) => book.isbn || book.title;
 
 const getOverrideForBook = (book) => {
-  const direct = runtimeOverrides[book.title];
-  if (direct) return direct;
-  if (book.isbn && runtimeOverrides[book.isbn]) return runtimeOverrides[book.isbn];
-  return null;
+  const local = runtimeOverrides[book.title] || (book.isbn && runtimeOverrides[book.isbn]) || null;
+  const shared = sharedOverrides[book.title] || (book.isbn && sharedOverrides[book.isbn]) || null;
+  if (!local && !shared) return null;
+  if (!shared) return local;
+  if (!local) return shared;
+  return { ...shared, ...local };
 };
 
 const COUNTRY_SYNONYMS = [
@@ -612,7 +756,16 @@ const buildStats = (headers, rows, source) => {
       const isbn = (isbnRaw || "").replace(/[^0-9Xx]/g, "");
       const publishedYearHint = extractYearHintFromRow(row, idx, source);
       const authorHint = extractAuthorHintFromRow(row, idx, source);
-      bookMap.set(title, { title, isbn, publishedYearHint, authorHint, userRatings: [] });
+      bookMap.set(title, { title, isbn, publishedYearHint, authorHint, userRatings: [], timesRead: 0 });
+    }
+    if (title && bookMap.has(title)) {
+      const entry = bookMap.get(title);
+      if (source === "Goodreads") {
+        const grTimes = parseNumber(getCell(row, idx, "Number of Times Read"));
+        entry.timesRead = Math.max(entry.timesRead, grTimes, 1);
+      } else {
+        entry.timesRead += 1;
+      }
     }
 
     const authorField = source === "StoryGraph" ? getCell(row, idx, "Authors") : getCell(row, idx, "Author");
@@ -642,6 +795,7 @@ const buildStats = (headers, rows, source) => {
       publishedYearHint: book.publishedYearHint || null,
       authorHint: book.authorHint || "",
       userRating,
+      timesRead: book.timesRead || 1,
     };
   });
 
@@ -848,9 +1002,14 @@ const cleanSeriesBookTitle = (title) =>
     .replace(/\s+/g, " ")
     .trim();
 
-const fetchBooksMetadata = async (booksList) => {
+const fetchBooksMetadata = async (booksList, onProgress) => {
   const metadata = [];
-  const requests = booksList.map(async (book) => {
+  let completed = 0;
+  const total = booksList.length;
+  const metaCache = readMetaCache();
+  const CACHE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  const processBook = async (book) => {
     const merged = {
       ...book,
       authors: [],
@@ -865,6 +1024,16 @@ const fetchBooksMetadata = async (booksList) => {
       seriesNumber: null,
       _sources: {},
     };
+
+    const cKey = cacheKeyForBook(book);
+    const cached = metaCache[cKey];
+    if (cached && (Date.now() - (cached._cachedAt || 0)) < CACHE_MAX_AGE) {
+      applyCacheToBook(merged, cached);
+      metadata.push(merged);
+      completed++;
+      if (onProgress) onProgress(completed, total, "books");
+      return;
+    }
 
     try {
       const fetchJson = async (url) => {
@@ -1057,18 +1226,18 @@ const fetchBooksMetadata = async (booksList) => {
         }
       }
 
-      // Final cover/pageCount/series fallback: broader Google query.
-      if (!merged.coverUrl || merged.pageCount === null || !merged.seriesName) {
+      // Final broad Google fallback — only if cover is still missing (the most visible gap).
+      if (!merged.coverUrl) {
         const broadGooglePayload = await fetchJson(
           `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(
             `${book.title} ${book.authorHint || ""}`.trim()
-          )}&maxResults=10&printType=books`
+          )}&maxResults=5&printType=books`
         );
         if (broadGooglePayload && Array.isArray(broadGooglePayload.items)) {
           const withCover = broadGooglePayload.items.find(
             (entry) => entry?.volumeInfo?.imageLinks?.thumbnail || entry?.volumeInfo?.imageLinks?.smallThumbnail
           );
-          if (!merged.coverUrl && withCover && withCover.volumeInfo) {
+          if (withCover && withCover.volumeInfo) {
             merged.coverUrl = (
               withCover.volumeInfo.imageLinks?.thumbnail || withCover.volumeInfo.imageLinks?.smallThumbnail || ""
             ).replace(/^http:\/\//i, "https://");
@@ -1079,19 +1248,11 @@ const fetchBooksMetadata = async (booksList) => {
             if (withPages) merged.pageCount = withPages.volumeInfo.pageCount;
           }
           if (!merged.seriesName) {
-            const allTitles = broadGooglePayload.items.map((e) => e?.volumeInfo?.title).filter(Boolean);
-            console.log(`[StatReads] Series scan for "${book.title}":`, allTitles);
             for (const entry of broadGooglePayload.items) {
               const vi = entry?.volumeInfo;
               const sd = detectSeriesFromTitle(vi?.title, vi?.subtitle);
-              if (sd) {
-                console.log(`[StatReads] Series detected from title="${vi?.title}" subtitle="${vi?.subtitle}":`, sd);
-                merged.seriesName = sd.name;
-                merged.seriesNumber = sd.number;
-                break;
-              }
+              if (sd) { merged.seriesName = sd.name; merged.seriesNumber = sd.number; break; }
             }
-            if (!merged.seriesName) console.log(`[StatReads] No series pattern found for "${book.title}"`);
           }
         }
       }
@@ -1099,10 +1260,18 @@ const fetchBooksMetadata = async (booksList) => {
       // Keep merged defaults/fallback values.
     }
 
+    metaCache[cKey] = bookToCache(merged);
     metadata.push(merged);
-  });
+    completed++;
+    if (onProgress) onProgress(completed, total, "books");
+  };
 
-  await Promise.allSettled(requests);
+  const BATCH_SIZE = 12;
+  for (let i = 0; i < booksList.length; i += BATCH_SIZE) {
+    const batch = booksList.slice(i, i + BATCH_SIZE);
+    await Promise.allSettled(batch.map((book) => processBook(book)));
+  }
+  writeMetaCache(metaCache);
 
   // Global author enrichment (for all books): if an author's country is known once,
   // reuse it for every book by the same author.
@@ -1120,25 +1289,19 @@ const fetchBooksMetadata = async (booksList) => {
         .filter((name) => name.split(/\s+/).length >= 2)
     )
   );
-  const authorRequests = uniqueAuthorCandidates.map(async (authorName) => {
+  const lookupAuthor = async (authorName) => {
     const authorKey = normalizeTitle(authorName);
     const query = authorName.replace(/\s+/g, " ").trim();
     if (!query) return;
 
-    // Primary: Wikidata P27 (country of citizenship)
     try {
-      console.log(`[StatReads] Trying Wikidata for "${query}"...`);
       const wdCountries = await fetchWikidataAuthorCountries(query, fetchJson);
-      console.log(`[StatReads] Wikidata returned for "${query}":`, wdCountries);
       if (wdCountries.length > 0) {
         authorCountryMap.set(authorKey, { countries: wdCountries, source: "wikidata" });
         return;
       }
-    } catch (wdErr) {
-      console.warn(`[StatReads] Wikidata lookup failed for "${query}":`, wdErr);
-    }
+    } catch { /* ignore */ }
 
-    // Fallback: Open Library author birth_place / location
     try {
       const searchPayload = await fetchJson(`https://openlibrary.org/search/authors.json?q=${encodeURIComponent(query)}&limit=5`);
       let countries = [];
@@ -1156,11 +1319,14 @@ const fetchBooksMetadata = async (booksList) => {
       if (countries.length > 0) {
         authorCountryMap.set(authorKey, { countries, source: "openlibrary" });
       }
-    } catch (olErr) {
-      console.warn(`[StatReads] OL author lookup failed for "${query}":`, olErr);
-    }
-  });
-  await Promise.allSettled(authorRequests);
+    } catch { /* ignore */ }
+  };
+
+  if (onProgress) onProgress(total, total, "countries");
+  for (let i = 0; i < uniqueAuthorCandidates.length; i += BATCH_SIZE) {
+    const batch = uniqueAuthorCandidates.slice(i, i + BATCH_SIZE);
+    await Promise.allSettled(batch.map((name) => lookupAuthor(name)));
+  }
   metadata.forEach((book) => {
     const candidates = collectAuthorCandidates(book).map((name) => normalizeTitle(name));
     const entries = candidates.map((key) => authorCountryMap.get(key)).filter(Boolean);
@@ -1260,6 +1426,10 @@ const fetchBooksMetadata = async (booksList) => {
       book.coverUrl = toDirectImageUrl(override.coverUrl);
       setSource(book, "coverUrl", "manual");
     }
+    if (override.seriesName) {
+      book.seriesName = override.seriesName;
+      book._manualSeries = true;
+    }
   });
 
   // Country is singular in dashboard (author nationality).
@@ -1280,32 +1450,59 @@ const fetchBooksMetadata = async (booksList) => {
     if (book.pageCount && book.pageCount > 0) totalPages += book.pageCount;
   });
 
-  // Common-prefix series detection for books without a seriesName (e.g., Harry Potter).
-  const authorGroups = new Map();
+  // Common-prefix series detection (e.g., Harry Potter).
+  // Groups ALL books by author — if some already have an API-detected seriesName,
+  // unassigned books sharing the same title prefix get absorbed into that series.
+  const authorGroupsAll = new Map();
   metadata.forEach((book) => {
-    if (book.seriesName) return;
     const authorKey = normalizeTitle(book.authorHint || (book.authors && book.authors[0]) || "");
     if (!authorKey) return;
-    if (!authorGroups.has(authorKey)) authorGroups.set(authorKey, []);
-    authorGroups.get(authorKey).push(book);
+    if (!authorGroupsAll.has(authorKey)) authorGroupsAll.set(authorKey, []);
+    authorGroupsAll.get(authorKey).push(book);
   });
-  authorGroups.forEach((books) => {
-    if (books.length < 3) return;
-    const titles = books.map((b) => b.title.split(/\s+/));
-    let prefixWords = [];
-    for (let i = 0; i < titles[0].length; i++) {
-      const word = titles[0][i].toLowerCase();
-      if (titles.every((t) => t[i] && t[i].toLowerCase() === word)) {
-        prefixWords.push(titles[0][i]);
-      } else break;
+  authorGroupsAll.forEach((books) => {
+    const withSeries = books.filter((b) => b.seriesName);
+    const withoutSeries = books.filter((b) => !b.seriesName);
+
+    // Try to absorb unassigned books into an existing API-detected series by title prefix.
+    if (withSeries.length > 0 && withoutSeries.length > 0) {
+      const seriesCounts = new Map();
+      withSeries.forEach((b) => {
+        const k = normalizeTitle(b.seriesName);
+        seriesCounts.set(k, (seriesCounts.get(k) || 0) + 1);
+      });
+      const dominantKey = [...seriesCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      const dominantName = withSeries.find((b) => normalizeTitle(b.seriesName) === dominantKey).seriesName;
+      const prefixLower = dominantName.toLowerCase().split(/\s+/);
+
+      withoutSeries.forEach((book) => {
+        const titleWords = book.title.toLowerCase().split(/\s+/);
+        const matches = prefixLower.every((pw, i) => titleWords[i] === pw);
+        if (matches) {
+          book.seriesName = dominantName;
+          book._prefixSeries = true;
+        }
+      });
     }
-    while (prefixWords.length > 0 && /^(and|the|of|in|a|an|&)$/i.test(prefixWords[prefixWords.length - 1])) {
-      prefixWords.pop();
-    }
-    if (prefixWords.length >= 2) {
-      const seriesName = prefixWords.join(" ");
-      console.log(`[StatReads] Prefix-detected series: "${seriesName}" (${books.length} books)`);
-      books.forEach((book) => { book.seriesName = seriesName; book._prefixSeries = true; });
+
+    // Pure prefix detection for author groups with no API-detected series at all.
+    if (withSeries.length === 0 && withoutSeries.length >= 3) {
+      const titles = withoutSeries.map((b) => b.title.split(/\s+/));
+      let prefixWords = [];
+      for (let i = 0; i < titles[0].length; i++) {
+        const word = titles[0][i].toLowerCase();
+        if (titles.every((t) => t[i] && t[i].toLowerCase() === word)) {
+          prefixWords.push(titles[0][i]);
+        } else break;
+      }
+      while (prefixWords.length > 0 && /^(and|the|of|in|a|an|&)$/i.test(prefixWords[prefixWords.length - 1])) {
+        prefixWords.pop();
+      }
+      if (prefixWords.length >= 2) {
+        const seriesName = prefixWords.join(" ");
+        console.log(`[StatReads] Prefix-detected series: "${seriesName}" (${withoutSeries.length} books)`);
+        withoutSeries.forEach((book) => { book.seriesName = seriesName; book._prefixSeries = true; });
+      }
     }
   });
 
@@ -1322,10 +1519,12 @@ const fetchBooksMetadata = async (booksList) => {
         name: book.seriesName,
         authorHint: book.authorHint || (book.authors && book.authors[0]) || "",
         userBooks: [],
-        prefixDetected: !!book._prefixSeries,
+        prefixDetected: true,
       });
     }
-    seriesMap.get(key).userBooks.push(book);
+    const entry = seriesMap.get(key);
+    entry.userBooks.push(book);
+    if (!book._prefixSeries) entry.prefixDetected = false;
   });
 
   const seriesData = [];
@@ -1352,7 +1551,8 @@ const fetchBooksMetadata = async (booksList) => {
     return null;
   };
 
-  const seriesRequests = Array.from(seriesMap.entries()).map(async ([key, info]) => {
+  const seriesEntries = Array.from(seriesMap.entries());
+  const processSeriesEntry = async ([key, info]) => {
     try {
       // Prefix-detected series (e.g. Harry Potter): use user's own books directly.
       if (info.prefixDetected) {
@@ -1412,17 +1612,26 @@ const fetchBooksMetadata = async (booksList) => {
         const entry = coversByNumber.get(n);
         const coverUrl = entry ? entry.cover : "";
         let isRead = false;
+        let matchedBook = null;
         if (entry) {
           const ct = stripThe(entry.cleanTitle);
-          isRead = userNormTitles.some((ut) => {
+          const matchIdx = userNormTitles.findIndex((ut) => {
             const utNoThe = stripThe(ut);
             return utNoThe === ct || utNoThe.includes(ct) || ct.includes(utNoThe);
           });
+          if (matchIdx !== -1) {
+            isRead = true;
+            matchedBook = info.userBooks[matchIdx];
+          }
         }
         if (!isRead) {
-          isRead = info.userBooks.some((ub) => ub.seriesNumber === n);
+          matchedBook = info.userBooks.find((ub) => ub.seriesNumber === n);
+          if (matchedBook) isRead = true;
         }
         if (isRead) readCount++;
+        if (matchedBook && !matchedBook.coverUrl && coverUrl) {
+          matchedBook.coverUrl = coverUrl;
+        }
         covers.push({ url: coverUrl, read: isRead });
       }
 
@@ -1435,8 +1644,13 @@ const fetchBooksMetadata = async (booksList) => {
     } catch (err) {
       console.warn(`[StatReads] Series enrichment failed for "${info.name}":`, err);
     }
-  });
-  await Promise.allSettled(seriesRequests);
+  };
+  if (onProgress) onProgress(total, total, "series");
+  for (let i = 0; i < seriesEntries.length; i += BATCH_SIZE) {
+    const batch = seriesEntries.slice(i, i + BATCH_SIZE);
+    await Promise.allSettled(batch.map((entry) => processSeriesEntry(entry)));
+  }
+  seriesData.sort((a, b) => a.name.localeCompare(b.name));
 
   return {
     booksMeta: metadata,
@@ -1483,12 +1697,16 @@ const renderYearSection = (booksMeta, mode = "books") => {
   const maxValue = Math.max(...Array.from(valueByYear.values()), 0);
   const positiveMax = maxValue > 0 ? maxValue : 1;
 
+  const yearRange = maxYear - minYear;
+  const sparseMode = yearRange > 80;
+  const yearList = sparseMode ? years : Array.from({ length: yearRange + 1 }, (_, i) => minYear + i);
+
   const bars = [];
-  for (let year = minYear; year <= maxYear; year += 1) {
+  yearList.forEach((year) => {
     const value = valueByYear.get(year) || 0;
-    const heightRatio = value > 0 ? value / positiveMax : 0.02;
+    const heightRatio = value > 0 ? value / positiveMax : (sparseMode ? 0.04 : 0.02);
     const barHeight = Math.max(2, Math.round(120 * heightRatio));
-    const mix = (year - minYear) / Math.max(1, maxYear - minYear);
+    const mix = (year - minYear) / Math.max(1, yearRange);
     const hue = mode === "ratings" ? 44 : Math.round(156 + mix * 36);
     const opacity = value > 0 ? 0.96 : 0.28;
     const titleValue = mode === "ratings" ? value.toFixed(2) : String(value);
@@ -1496,7 +1714,7 @@ const renderYearSection = (booksMeta, mode = "books") => {
     bars.push(
       `<span class="year-bar" style="height:${barHeight}px;background:hsl(${hue},82%,57%);opacity:${opacity}" title="${year}: ${titleValue} ${suffix}"></span>`
     );
-  }
+  });
 
   yearChart.innerHTML = bars.join("");
   yearMin.textContent = String(minYear);
@@ -1601,32 +1819,111 @@ const setTaxonomyTab = (mode) => {
   renderTaxonomySection(latestBooksMeta, currentTaxonomyMode);
 };
 
-const renderThemesList = (container, rows, mode) => {
-  if (!rows || rows.length === 0) {
-    container.innerHTML = '<p class="section-empty">Not enough data.</p>';
+const PIE_COLORS = [
+  "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444",
+  "#06b6d4", "#84cc16", "#f97316", "#ec4899", "#14b8a6",
+  "#6366f1", "#eab308",
+];
+
+const draw3dPie = (canvas, rows, mode) => {
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = 320;
+  const h = 320;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  if (!rows || rows.length === 0) return;
+
+  const total = rows.reduce((s, r) => s + r.value, 0);
+  if (total <= 0) return;
+
+  const cx = w / 2;
+  const cy = h / 2 - 10;
+  const rx = w * 0.38;
+  const ry = rx * 0.55;
+  const depth = 18;
+
+  const slices = rows.map((r, i) => ({
+    name: r.name,
+    value: r.value,
+    fraction: r.value / total,
+    color: PIE_COLORS[i % PIE_COLORS.length],
+  }));
+
+  const darken = (hex, amt) => {
+    const num = parseInt(hex.slice(1), 16);
+    const r = Math.max(0, (num >> 16) - amt);
+    const g = Math.max(0, ((num >> 8) & 0xff) - amt);
+    const b = Math.max(0, (num & 0xff) - amt);
+    return `rgb(${r},${g},${b})`;
+  };
+
+  // Draw side faces (3D depth) for slices visible at the bottom
+  let angle = -Math.PI / 2;
+  slices.forEach((slice) => {
+    const startAngle = angle;
+    const sweep = slice.fraction * Math.PI * 2;
+    const endAngle = startAngle + sweep;
+
+    ctx.beginPath();
+    for (let a = startAngle; a <= endAngle; a += 0.02) {
+      ctx.lineTo(cx + rx * Math.cos(a), cy + ry * Math.sin(a) + depth);
+    }
+    for (let a = endAngle; a >= startAngle; a -= 0.02) {
+      ctx.lineTo(cx + rx * Math.cos(a), cy + ry * Math.sin(a));
+    }
+    ctx.closePath();
+    ctx.fillStyle = darken(slice.color, 55);
+    ctx.fill();
+
+    angle = endAngle;
+  });
+
+  // Draw top face
+  angle = -Math.PI / 2;
+  slices.forEach((slice) => {
+    const startAngle = angle;
+    const sweep = slice.fraction * Math.PI * 2;
+    const endAngle = startAngle + sweep;
+
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.ellipse(cx, cy, rx, ry, 0, startAngle, endAngle);
+    ctx.closePath();
+    ctx.fillStyle = slice.color;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(5,7,13,0.5)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    angle = endAngle;
+  });
+};
+
+const renderThemeLegend = (container, rows, mode) => {
+  if (!container || !rows || rows.length === 0) {
+    if (container) container.innerHTML = "";
     return;
   }
-  const maxValue = Math.max(...rows.map((row) => row.value), 0);
-  const safeMax = maxValue > 0 ? maxValue : 1;
+  const total = rows.reduce((s, r) => s + r.value, 0);
   container.innerHTML = rows
-    .map((row) => {
-      const width = Math.max(3, Math.round((row.value / safeMax) * 100));
-      const label = mode === "most-read" ? `${row.value} ${row.value === 1 ? "book" : "books"}` : `Average ${row.value.toFixed(2)}`;
-      return `
-        <div class="theme-item">
-          <span class="theme-name">${escapeHtml(row.name)}</span>
-          <div class="theme-bar-track">
-            <div class="theme-bar-fill" style="width:${width}%"></div>
-          </div>
-          <span class="theme-stat">${escapeHtml(label)}</span>
-        </div>
-      `;
+    .map((row, i) => {
+      const color = PIE_COLORS[i % PIE_COLORS.length];
+      const label = mode === "most-read"
+        ? `${row.name} (${row.value})`
+        : `${row.name} (${row.value.toFixed(1)})`;
+      return `<span class="theme-legend-item"><span class="theme-legend-swatch" style="background:${color}"></span>${escapeHtml(label)}</span>`;
     })
     .join("");
 };
 
-const renderThemesSection = (booksMeta, mode = "most-read") => {
-  const themeRows = buildTaxonomyRows(
+const getThemeRows = (booksMeta, mode) =>
+  buildTaxonomyRows(
     booksMeta,
     (book) => {
       const all = (book.rawSubjects || []).filter(Boolean);
@@ -1644,16 +1941,201 @@ const renderThemesSection = (booksMeta, mode = "most-read") => {
     mode,
     normalizeThemeEntry
   );
-  renderThemesList(themeList, themeRows, mode);
+
+const renderThemesSection = (booksMeta) => {
+  const mostReadCanvas = document.getElementById("themePieMostRead");
+  const highestRatedCanvas = document.getElementById("themePieHighestRated");
+  const mostReadLegend = document.getElementById("themeLegendMostRead");
+  const highestRatedLegend = document.getElementById("themeLegendHighestRated");
+
+  const mostReadRows = getThemeRows(booksMeta, "most-read").slice(0, 10);
+  const highestRatedRows = getThemeRows(booksMeta, "highest-rated").slice(0, 10);
+
+  if (mostReadCanvas) draw3dPie(mostReadCanvas, mostReadRows, "most-read");
+  renderThemeLegend(mostReadLegend, mostReadRows, "most-read");
+  if (highestRatedCanvas) draw3dPie(highestRatedCanvas, highestRatedRows, "highest-rated");
+  renderThemeLegend(highestRatedLegend, highestRatedRows, "highest-rated");
 };
 
 const setThemesTab = (mode) => {
   currentThemesMode = mode;
-  themesMostReadTab.classList.toggle("is-active", mode === "most-read");
-  themesHighestRatedTab.classList.toggle("is-active", mode === "highest-rated");
-  if (themesNote) themesNote.style.display = mode === "highest-rated" ? "block" : "none";
-  renderThemesSection(latestBooksMeta, currentThemesMode);
+  renderThemesSection(latestBooksMeta);
 };
+
+const normalizeAuthorKey = (name) =>
+  name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+const buildAuthorRows = (booksMeta, mode) => {
+  const map = new Map();
+  const keyToDisplay = new Map();
+
+  booksMeta.forEach((book) => {
+    const rawNames = [book.authorHint, ...(book.authors || [])].map((n) => (n || "").trim()).filter(Boolean);
+    // Pick the longest variant per book as the canonical name, merge shorter substrings.
+    const deduped = [];
+    const seen = new Set();
+    const sorted = [...rawNames].sort((a, b) => b.length - a.length);
+    sorted.forEach((name) => {
+      const key = normalizeAuthorKey(name);
+      if (seen.has(key)) return;
+      const isSubOf = deduped.some((d) => normalizeAuthorKey(d).includes(key));
+      if (isSubOf) return;
+      deduped.push(name);
+      seen.add(key);
+    });
+
+    deduped.forEach((name) => {
+      const key = normalizeAuthorKey(name);
+      if (!keyToDisplay.has(key) || name.length > keyToDisplay.get(key).length) {
+        keyToDisplay.set(key, name);
+      }
+      if (!map.has(key)) map.set(key, { bookCount: 0, ratingTotal: 0, ratingCount: 0 });
+      const entry = map.get(key);
+      entry.bookCount++;
+      const rating = book.userRating;
+      if (typeof rating === "number" && rating > 0) {
+        entry.ratingTotal += rating;
+        entry.ratingCount++;
+      }
+    });
+  });
+
+  const rows = Array.from(map.entries()).map(([key, e]) => ({
+    name: keyToDisplay.get(key) || key,
+    bookCount: e.bookCount,
+    avgRating: e.ratingCount > 0 ? e.ratingTotal / e.ratingCount : 0,
+    ratingCount: e.ratingCount,
+  }));
+  if (mode === "highest-rated") {
+    return rows
+      .filter((r) => r.ratingCount >= 1)
+      .sort((a, b) => b.avgRating - a.avgRating || a.name.localeCompare(b.name));
+  }
+  return rows.sort((a, b) => b.bookCount - a.bookCount || a.name.localeCompare(b.name));
+};
+
+const authorPhotoCache = new Map();
+
+const fetchAuthorPhoto = async (name) => {
+  if (authorPhotoCache.has(name)) return authorPhotoCache.get(name);
+  try {
+    // Search Wikidata for the author entity.
+    const searchUrl = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(name)}&language=en&type=item&limit=5&format=json&origin=*`;
+    const searchResp = await fetch(searchUrl);
+    if (!searchResp.ok) { authorPhotoCache.set(name, ""); return ""; }
+    const searchData = await searchResp.json();
+    const results = searchData.search || [];
+    if (results.length === 0) { authorPhotoCache.set(name, ""); return ""; }
+
+    // Try each result until we find one with a photo (P18 claim).
+    for (const result of results) {
+      const entityId = result.id;
+      const claimsUrl = `https://www.wikidata.org/w/api.php?action=wbgetclaims&entity=${entityId}&property=P18&format=json&origin=*`;
+      const claimsResp = await fetch(claimsUrl);
+      if (!claimsResp.ok) continue;
+      const claimsData = await claimsResp.json();
+      const p18 = (claimsData.claims || {}).P18;
+      if (!p18 || p18.length === 0) continue;
+      const filename = p18[0].mainsnak?.datavalue?.value;
+      if (!filename) continue;
+      const url = `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(filename)}?width=200`;
+      authorPhotoCache.set(name, url);
+      return url;
+    }
+  } catch { /* ignore */ }
+  authorPhotoCache.set(name, "");
+  return "";
+};
+
+const renderAuthorCard = (row, mode) => {
+  const safeName = escapeHtml(row.name);
+  const stat = mode === "highest-rated"
+    ? `avg ${row.avgRating.toFixed(2)}`
+    : `${row.bookCount} ${row.bookCount === 1 ? "book" : "books"}`;
+  const placeholder = `<div class="author-photo-fallback">&#9787;</div>`;
+  return `
+    <div class="author-card" data-author="${safeName}">
+      <button class="author-override-btn" type="button" title="Override photo">&#x22EE;</button>
+      <div class="author-photo">${placeholder}</div>
+      <p class="author-name" title="${safeName}">${safeName}</p>
+      <p class="author-stat">${stat}</p>
+    </div>
+  `;
+};
+
+const applyAuthorPhotoToCard = (card, url, name) => {
+  const photoDiv = card.querySelector(".author-photo");
+  if (photoDiv && url) {
+    photoDiv.innerHTML = `<img src="${escapeHtml(url)}" alt="${escapeHtml(name)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=\\'author-photo-fallback\\'>&#9787;</div>';" />`;
+  }
+};
+
+const loadAuthorPhotos = (container) => {
+  const cards = container.querySelectorAll(".author-card[data-author]");
+  const PHOTO_BATCH = 5;
+  let idx = 0;
+  const loadNext = async () => {
+    const batch = [];
+    while (idx < cards.length && batch.length < PHOTO_BATCH) {
+      const card = cards[idx++];
+      if (card.dataset.photoLoaded) continue;
+      const name = card.dataset.author;
+      const overrideUrl = authorOverrides[name]?.photoUrl;
+      if (overrideUrl) {
+        card.dataset.photoLoaded = "1";
+        applyAuthorPhotoToCard(card, overrideUrl, name);
+        continue;
+      }
+      batch.push(card);
+    }
+    if (batch.length === 0) { if (idx < cards.length) loadNext(); return; }
+    await Promise.allSettled(batch.map(async (card) => {
+      const name = card.dataset.author;
+      const url = await fetchAuthorPhoto(name);
+      card.dataset.photoLoaded = "1";
+      if (url) applyAuthorPhotoToCard(card, url, name);
+    }));
+    if (idx < cards.length) loadNext();
+  };
+  loadNext();
+};
+
+const renderAuthorsSection = (booksMeta, mode) => {
+  if (!authorsGrid) return;
+  if (!booksMeta || booksMeta.length === 0) {
+    authorsGrid.innerHTML = '<p class="section-empty">No author data available.</p>';
+    if (authorsShowMore) authorsShowMore.style.display = "none";
+    return;
+  }
+  latestAuthorRows = buildAuthorRows(booksMeta, mode);
+  authorsVisible = 10;
+  renderAuthorsSlice();
+};
+
+const renderAuthorsSlice = () => {
+  if (!authorsGrid) return;
+  const mode = currentAuthorsMode;
+  const visible = latestAuthorRows.slice(0, authorsVisible);
+  authorsGrid.innerHTML = visible.map((r) => renderAuthorCard(r, mode)).join("");
+  loadAuthorPhotos(authorsGrid);
+  if (authorsShowMore) {
+    authorsShowMore.style.display = authorsVisible < latestAuthorRows.length ? "" : "none";
+  }
+};
+
+const setAuthorsTab = (mode) => {
+  currentAuthorsMode = mode;
+  if (authorsMostReadTab) authorsMostReadTab.classList.toggle("is-active", mode === "most-read");
+  if (authorsHighestRatedTab) authorsHighestRatedTab.classList.toggle("is-active", mode === "highest-rated");
+  renderAuthorsSection(latestBooksMeta, mode);
+};
+
+if (authorsMostReadTab) authorsMostReadTab.addEventListener("click", () => setAuthorsTab("most-read"));
+if (authorsHighestRatedTab) authorsHighestRatedTab.addEventListener("click", () => setAuthorsTab("highest-rated"));
+if (authorsShowMore) authorsShowMore.addEventListener("click", () => {
+  authorsVisible += 10;
+  renderAuthorsSlice();
+});
 
 const renderCollections = (seriesData, mode = "complete") => {
   if (!collectionsGrid) return;
@@ -1662,9 +2144,10 @@ const renderCollections = (seriesData, mode = "complete") => {
     return;
   }
 
-  const filtered = mode === "complete"
+  const filtered = (mode === "complete"
     ? seriesData.filter((s) => s.readCount >= s.totalBooks)
-    : seriesData.filter((s) => s.readCount < s.totalBooks && s.totalBooks - s.readCount <= 2);
+    : seriesData.filter((s) => s.readCount < s.totalBooks && s.totalBooks - s.readCount <= 2)
+  ).sort((a, b) => a.name.localeCompare(b.name));
 
   if (filtered.length === 0) {
     const msg = mode === "complete" ? "No completed series yet." : "No almost-complete series.";
@@ -1703,6 +2186,44 @@ const setCollectionsTab = (mode) => {
   collectionsCompleteTab.classList.toggle("is-active", mode === "complete");
   collectionsAlmostTab.classList.toggle("is-active", mode === "almost");
   renderCollections(latestSeriesData, currentCollectionsMode);
+};
+
+const formatTimesRead = (count) => {
+  if (count <= 1) return "Once";
+  if (count === 2) return "Twice";
+  if (count === 3) return "Thrice";
+  return `${count} times`;
+};
+
+const renderMostRead = (booksMeta) => {
+  if (!mostReadGrid) return;
+  if (!booksMeta || booksMeta.length === 0) {
+    mostReadGrid.innerHTML = '<p class="section-empty">No books available.</p>';
+    return;
+  }
+
+  const sorted = [...booksMeta].sort((a, b) => {
+    const timeDiff = (b.timesRead || 1) - (a.timesRead || 1);
+    if (timeDiff !== 0) return timeDiff;
+    return (a.publishedYear || 9999) - (b.publishedYear || 9999);
+  });
+
+  mostReadGrid.innerHTML = sorted
+    .slice(0, 36)
+    .map((book) => {
+      const safeTitle = escapeHtml(book.title);
+      const coverHtml = book.coverUrl
+        ? `<img src="${escapeHtml(book.coverUrl)}" alt="${safeTitle}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';" />`
+        : `<div class="cover-fallback">${safeTitle}</div>`;
+      const times = book.timesRead || 1;
+      return `
+        <div class="most-read-card">
+          <div class="most-read-cover" title="${safeTitle}">${coverHtml}</div>
+          <p class="most-read-count">${formatTimesRead(times)}</p>
+        </div>
+      `;
+    })
+    .join("");
 };
 
 const renderMetadataSources = (booksMeta) => {
@@ -1760,6 +2281,7 @@ const openOverrideEditor = (bookKey, bookTitle) => {
   overrideYear.value = existing.publishedYear || "";
   overrideCountries.value = Array.isArray(existing.countries) ? existing.countries[0] || "" : "";
   overrideGenres.value = Array.isArray(existing.genres) ? existing.genres.join(", ") : "";
+  overrideSeriesName.value = existing.seriesName || "";
   overrideCoverUrl.value = existing.coverUrl || "";
   overrideEditor.classList.add("is-visible");
   overrideEditor.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1799,19 +2321,54 @@ const applyRuntimeOverridesToCurrentBooks = () => {
       book.coverUrl = toDirectImageUrl(override.coverUrl);
       setSource(book, "coverUrl", "manual");
     }
+    if (override.seriesName) {
+      book.seriesName = override.seriesName;
+      book._manualSeries = true;
+    }
   });
 };
 
+const buildManualSeriesEntries = () => {
+  const manualGroups = new Map();
+  latestBooksMeta.forEach((book) => {
+    if (!book._manualSeries || !book.seriesName) return;
+    const key = normalizeTitle(book.seriesName);
+    if (!manualGroups.has(key)) manualGroups.set(key, { name: book.seriesName, books: [] });
+    manualGroups.get(key).books.push(book);
+  });
+  const entries = [];
+  manualGroups.forEach(({ name, books }) => {
+    if (books.length < 1) return;
+    entries.push({
+      name,
+      totalBooks: books.length,
+      readCount: books.length,
+      covers: books.map((b) => ({ url: b.coverUrl || "", read: true })),
+      _manual: true,
+    });
+  });
+  return entries;
+};
+
 const rerenderFromCurrentMetadata = () => {
+  const manualEntries = buildManualSeriesEntries();
+  const existingApiNames = new Set(latestSeriesData.filter((s) => !s._manual).map((s) => normalizeTitle(s.name)));
+  latestSeriesData = [
+    ...latestSeriesData.filter((s) => !s._manual),
+    ...manualEntries.filter((s) => !existingApiNames.has(normalizeTitle(s.name))),
+  ].sort((a, b) => a.name.localeCompare(b.name));
   setYearTab(currentYearMode);
   renderDecadesSection(latestBooksMeta);
   setTaxonomyTab(currentTaxonomyMode);
   setThemesTab(currentThemesMode);
+  setAuthorsTab(currentAuthorsMode);
   setCollectionsTab(currentCollectionsMode);
+  renderMostRead(latestBooksMeta);
   renderMetadataSources(latestBooksMeta);
 };
 
 runtimeOverrides = readOverridesFromStorage();
+loadSharedOverrides().then((data) => { sharedOverrides = data; });
 
 const renderDecadesSection = (booksMeta) => {
   booksMeta.forEach((book) => {
@@ -1963,9 +2520,31 @@ confirmUploadButton.addEventListener("click", async () => {
     setVisibleView(dashboardView);
     window.scrollTo({ top: 0, behavior: "smooth" });
 
+    const loadingWrap = document.getElementById("loadingWrap");
+    const loadingBarFill = document.getElementById("loadingBarFill");
+    const loadingText = document.getElementById("loadingText");
+    if (loadingWrap) loadingWrap.style.display = "";
+
+    const updateProgress = (done, total, phase) => {
+      if (!loadingBarFill || !loadingText) return;
+      if (phase === "books") {
+        const pct = Math.round((done / total) * 80);
+        loadingBarFill.style.width = pct + "%";
+        loadingText.textContent = `Fetching book metadata… ${done}/${total}`;
+      } else if (phase === "countries") {
+        loadingBarFill.style.width = "85%";
+        loadingText.textContent = "Resolving author countries…";
+      } else if (phase === "series") {
+        loadingBarFill.style.width = "92%";
+        loadingText.textContent = "Enriching series data…";
+      }
+    };
+
     try {
-      const metadata = await fetchBooksMetadata(stats.booksList);
-      // Authors stat is CSV-read-authors count only; keep existing value.
+      const metadata = await fetchBooksMetadata(stats.booksList, updateProgress);
+      if (loadingBarFill) loadingBarFill.style.width = "100%";
+      if (loadingText) loadingText.textContent = "Done!";
+      setTimeout(() => { if (loadingWrap) loadingWrap.style.display = "none"; }, 800);
       statCountries.textContent = metadata.countryCount > 0 ? formatNumber(metadata.countryCount) : "--";
       statPages.textContent = metadata.totalPages > 0 ? formatNumber(metadata.totalPages) : "--";
       latestBooksMeta = metadata.booksMeta;
@@ -1975,9 +2554,12 @@ confirmUploadButton.addEventListener("click", async () => {
       renderDecadesSection(metadata.booksMeta);
       setTaxonomyTab(currentTaxonomyMode);
       setThemesTab(currentThemesMode);
+      setAuthorsTab(currentAuthorsMode);
       setCollectionsTab(currentCollectionsMode);
+      renderMostRead(metadata.booksMeta);
       renderMetadataSources(metadata.booksMeta);
     } catch {
+      if (loadingWrap) loadingWrap.style.display = "none";
       statCountries.textContent = "--";
       statPages.textContent = "--";
       latestBooksMeta = [];
@@ -1986,7 +2568,9 @@ confirmUploadButton.addEventListener("click", async () => {
       renderDecadesSection([]);
       setTaxonomyTab(currentTaxonomyMode);
       setThemesTab(currentThemesMode);
+      setAuthorsTab(currentAuthorsMode);
       setCollectionsTab(currentCollectionsMode);
+      renderMostRead([]);
       renderMetadataSources([]);
     }
   } catch (error) {
@@ -2001,8 +2585,8 @@ booksTab.addEventListener("click", () => setYearTab("books"));
 ratingsTab.addEventListener("click", () => setYearTab("ratings"));
 taxonomyMostReadTab.addEventListener("click", () => setTaxonomyTab("most-read"));
 taxonomyHighestRatedTab.addEventListener("click", () => setTaxonomyTab("highest-rated"));
-themesMostReadTab.addEventListener("click", () => setThemesTab("most-read"));
-themesHighestRatedTab.addEventListener("click", () => setThemesTab("highest-rated"));
+if (themesMostReadTab) themesMostReadTab.addEventListener("click", () => setThemesTab("most-read"));
+if (themesHighestRatedTab) themesHighestRatedTab.addEventListener("click", () => setThemesTab("highest-rated"));
 collectionsCompleteTab.addEventListener("click", () => setCollectionsTab("complete"));
 collectionsAlmostTab.addEventListener("click", () => setCollectionsTab("almost"));
 
@@ -2018,6 +2602,17 @@ overrideEditor.addEventListener("submit", (event) => {
   event.preventDefault();
   const key = overrideBookKey.value.trim();
   if (!key) return;
+
+  const rawCoverUrl = overrideCoverUrl.value.trim();
+  if (rawCoverUrl && !isAllowedCoverUrl(toDirectImageUrl(rawCoverUrl))) {
+    alert(
+      "Cover URL must be HTTPS from a known book cover source:\n" +
+      ALLOWED_COVER_HOSTS.join(", ")
+    );
+    overrideCoverUrl.focus();
+    return;
+  }
+
   const next = {};
   const yearValue = Number(overrideYear.value);
   if (Number.isFinite(yearValue) && yearValue >= 1000 && yearValue <= 2100) next.publishedYear = yearValue;
@@ -2025,7 +2620,8 @@ overrideEditor.addEventListener("submit", (event) => {
   if (singleCountry.length > 0) next.countries = singleCountry;
   const genres = parseCsvListInput(overrideGenres.value);
   if (genres.length > 0) next.genres = normalizeGenreLabels(genres);
-  if (overrideCoverUrl.value.trim()) next.coverUrl = toDirectImageUrl(overrideCoverUrl.value.trim());
+  if (overrideSeriesName.value.trim()) next.seriesName = sanitizeText(overrideSeriesName.value, 120);
+  if (rawCoverUrl) next.coverUrl = toDirectImageUrl(rawCoverUrl);
 
   if (Object.keys(next).length === 0) {
     delete runtimeOverrides[key];
@@ -2036,6 +2632,27 @@ overrideEditor.addEventListener("submit", (event) => {
   applyRuntimeOverridesToCurrentBooks();
   rerenderFromCurrentMetadata();
   closeOverrideEditor();
+});
+
+const GITHUB_REPO = "atandritC/StatReads";
+
+submitOverrideBtn.addEventListener("click", () => {
+  const key = overrideBookKey.value.trim();
+  if (!key) return;
+  const entry = runtimeOverrides[key];
+  if (!entry || Object.keys(entry).length === 0) {
+    alert("Save the override first, then submit.");
+    return;
+  }
+  const json = JSON.stringify({ [key]: entry }, null, 2);
+  const title = encodeURIComponent(`[Override] ${key}`);
+  const body = encodeURIComponent(
+    `### Book\n**${key}**\n\n### Override JSON\n\`\`\`json\n${json}\n\`\`\`\n\n### Why\n_Briefly describe what was wrong or missing._`
+  );
+  window.open(
+    `https://github.com/${GITHUB_REPO}/issues/new?title=${title}&body=${body}&labels=override`,
+    "_blank"
+  );
 });
 
 clearOverrideBtn.addEventListener("click", () => {
@@ -2062,4 +2679,131 @@ exportOverridesBtn.addEventListener("click", () => {
   anchor.remove();
   URL.revokeObjectURL(url);
 });
+
+// Author photo override popup wiring.
+const authorPhotoOverlay = document.getElementById("authorPhotoOverlay");
+const authorPopupTitle = document.getElementById("authorPopupTitle");
+const authorPopupKey = document.getElementById("authorPopupKey");
+const authorPopupUrl = document.getElementById("authorPopupUrl");
+const authorPopupSave = document.getElementById("authorPopupSave");
+const authorPopupClear = document.getElementById("authorPopupClear");
+const authorPopupCancel = document.getElementById("authorPopupCancel");
+
+const openAuthorPopup = (authorName) => {
+  if (!authorPhotoOverlay) return;
+  authorPopupKey.value = authorName;
+  authorPopupTitle.textContent = authorName;
+  const existing = authorOverrides[authorName];
+  authorPopupUrl.value = existing?.photoUrl || "";
+  authorPhotoOverlay.style.display = "";
+  authorPopupUrl.focus();
+};
+
+const closeAuthorPopup = () => {
+  if (authorPhotoOverlay) authorPhotoOverlay.style.display = "none";
+};
+
+if (authorsGrid) {
+  authorsGrid.addEventListener("click", (e) => {
+    const btn = e.target.closest(".author-override-btn");
+    if (!btn) return;
+    const card = btn.closest(".author-card");
+    if (!card) return;
+    openAuthorPopup(card.dataset.author);
+  });
+}
+
+if (authorPopupSave) {
+  authorPopupSave.addEventListener("click", () => {
+    const name = authorPopupKey.value;
+    if (!name) return;
+    const rawUrl = authorPopupUrl.value.trim();
+    if (rawUrl && !isAllowedCoverUrl(rawUrl)) {
+      alert("Photo URL must be HTTPS from a known host:\n" + ALLOWED_COVER_HOSTS.join(", "));
+      authorPopupUrl.focus();
+      return;
+    }
+    if (rawUrl) {
+      authorOverrides[name] = { photoUrl: rawUrl };
+    } else {
+      delete authorOverrides[name];
+    }
+    persistAuthorOverrides();
+    authorPhotoCache.delete(name);
+    // Refresh the card photo in-place.
+    const card = authorsGrid?.querySelector(`.author-card[data-author="${CSS.escape(name)}"]`);
+    if (card) {
+      card.dataset.photoLoaded = "";
+      const photoDiv = card.querySelector(".author-photo");
+      if (rawUrl) {
+        card.dataset.photoLoaded = "1";
+        applyAuthorPhotoToCard(card, rawUrl, name);
+      } else if (photoDiv) {
+        photoDiv.innerHTML = `<div class="author-photo-fallback">&#9787;</div>`;
+        loadAuthorPhotos(authorsGrid);
+      }
+    }
+    closeAuthorPopup();
+  });
+}
+
+if (authorPopupClear) {
+  authorPopupClear.addEventListener("click", () => {
+    const name = authorPopupKey.value;
+    if (!name) return;
+    delete authorOverrides[name];
+    persistAuthorOverrides();
+    authorPhotoCache.delete(name);
+    const card = authorsGrid?.querySelector(`.author-card[data-author="${CSS.escape(name)}"]`);
+    if (card) {
+      card.dataset.photoLoaded = "";
+      const photoDiv = card.querySelector(".author-photo");
+      if (photoDiv) photoDiv.innerHTML = `<div class="author-photo-fallback">&#9787;</div>`;
+      loadAuthorPhotos(authorsGrid);
+    }
+    closeAuthorPopup();
+  });
+}
+
+if (authorPopupCancel) {
+  authorPopupCancel.addEventListener("click", closeAuthorPopup);
+}
+
+if (authorPhotoOverlay) {
+  authorPhotoOverlay.addEventListener("click", (e) => {
+    if (e.target === authorPhotoOverlay) closeAuthorPopup();
+  });
+}
+
+(function generateHeroBars() {
+  const palette = [
+    "#3b82f6", "#2563eb", "#1d4ed8",
+    "#06b6d4", "#22d3ee", "#67e8f9",
+    "#10b981", "#34d399", "#6ee7b7",
+    "#f59e0b", "#fbbf24", "#f97316",
+    "#8b5cf6", "#a78bfa",
+  ];
+  const containers = [
+    document.getElementById("heroBarsLeft"),
+    document.getElementById("heroBarsRight"),
+  ];
+  const barCount = 28;
+  containers.forEach((el) => {
+    if (!el) return;
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < barCount; i++) {
+      const bar = document.createElement("span");
+      bar.className = "hero-bar";
+      const distFromEdge = i < barCount / 2 ? i : barCount - 1 - i;
+      const minH = 14;
+      const maxH = 140;
+      const height = minH + Math.random() * (maxH - minH) * (distFromEdge / (barCount / 2));
+      bar.style.height = height + "px";
+      bar.style.background = palette[Math.floor(Math.random() * palette.length)];
+      bar.style.opacity = 0.45 + Math.random() * 0.45;
+      frag.appendChild(bar);
+    }
+    el.appendChild(frag);
+  });
+})();
 
