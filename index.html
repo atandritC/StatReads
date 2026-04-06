@@ -4,11 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>StatReads</title>
-    <link id="favicon" rel="icon" type="image/png" href="./assets/tab-icon.png" />
-    <link rel="shortcut icon" type="image/png" href="./assets/tab-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
+    <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <button id="globalThemeToggle" class="global-theme-toggle" type="button" title="Toggle theme" aria-label="Toggle light/dark theme">&#9790;</button>
     <main id="uploadView" class="landing view is-visible">
       <header class="brand">
         <div class="brand-main">
@@ -58,7 +59,7 @@
 
     <section id="dashboardView" class="dashboard view">
       <header class="dashboard-hero">
-        <div class="hero-bars hero-bars-left" id="heroBarsLeft"></div>
+        <canvas id="heroLineLeft" class="hero-line-canvas hero-line-canvas-left" width="260" height="180"></canvas>
         <div class="hero-center">
           <h1 class="hero-title">A Life in Books</h1>
           <div class="hero-badge-row">
@@ -72,7 +73,7 @@
             <p id="loadingText" class="loading-text">Fetching metadata…</p>
           </div>
         </div>
-        <div class="hero-bars hero-bars-right" id="heroBarsRight"></div>
+        <canvas id="heroLineRight" class="hero-line-canvas hero-line-canvas-right" width="260" height="180"></canvas>
       </header>
 
       <section class="stats-strip">
@@ -292,6 +293,20 @@
       </section>
     </section>
 
+    <script>
+      (function() {
+        var saved = localStorage.getItem("statreads_theme");
+        var theme;
+        if (saved === "light" || saved === "dark") {
+          theme = saved;
+        } else {
+          theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        document.documentElement.setAttribute("data-theme", theme);
+        var btn = document.getElementById("globalThemeToggle");
+        if (btn) btn.innerHTML = theme === "dark" ? "\u263E" : "\u2600";
+      })();
+    </script>
     <script src="./script.js"></script>
   </body>
 </html>

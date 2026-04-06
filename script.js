@@ -1699,17 +1699,19 @@ const renderYearSection = (booksMeta, mode = "books") => {
     const barHeight = value > 0 ? Math.max(4, Math.round(130 * heightRatio)) : 0;
     const mix = (year - minYear) / Math.max(1, yearRange);
     if (mode === "ratings") {
-      const lum = 52 + mix * 8;
+      const r = Math.round(128 + mix * 50);
+      const g = Math.round(82 + mix * 40);
+      const b = Math.round(50 + mix * 30);
       bars.push(
-        `<span class="year-bar${value > 0 ? "" : " year-bar-empty"}" data-year="${year}" data-value="${value > 0 ? "Average " + value.toFixed(2) : ""}" data-label="Published in ${year}" style="height:${barHeight}px;background:hsl(40,78%,${lum}%)"></span>`
+        `<span class="year-bar${value > 0 ? "" : " year-bar-empty"}" data-year="${year}" data-value="${value > 0 ? "Average " + value.toFixed(2) : ""}" data-label="Published in ${year}" style="height:${barHeight}px;background:rgb(${r},${g},${b})"></span>`
       );
     } else {
-      const hue = Math.round(156 + mix * 40);
-      const sat = 72 + mix * 10;
-      const lum = 48 + mix * 10;
+      const r = Math.round(50 - mix * 10);
+      const g = Math.round(96 + mix * 60);
+      const b = Math.round(128 + mix * 50);
       const label = value === 1 ? "1 book" : `${value} books`;
       bars.push(
-        `<span class="year-bar${value > 0 ? "" : " year-bar-empty"}" data-year="${year}" data-value="${value > 0 ? label : ""}" data-label="Published in ${year}" style="height:${barHeight}px;background:hsl(${hue},${sat}%,${lum}%)"></span>`
+        `<span class="year-bar${value > 0 ? "" : " year-bar-empty"}" data-year="${year}" data-value="${value > 0 ? label : ""}" data-label="Published in ${year}" style="height:${barHeight}px;background:rgb(${r},${g},${b})"></span>`
       );
     }
   });
@@ -1837,9 +1839,9 @@ const setTaxonomyTab = (mode) => {
 };
 
 const PIE_COLORS = [
-  "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444",
-  "#06b6d4", "#84cc16", "#f97316", "#ec4899", "#14b8a6",
-  "#6366f1", "#eab308",
+  "#326080", "#805232", "#5a9cc0", "#b07a55", "#B5D2E6",
+  "#a06840", "#3d7a9e", "#c4956a", "#2a4e6a", "#d4a87a",
+  "#6aaac8", "#9a6a42",
 ];
 
 const draw3dPie = (canvas, rows, mode) => {
@@ -1914,7 +1916,7 @@ const draw3dPie = (canvas, rows, mode) => {
     ctx.closePath();
     ctx.fillStyle = slice.color;
     ctx.fill();
-    ctx.strokeStyle = "rgba(5,7,13,0.5)";
+    ctx.strokeStyle = "rgba(10,26,40,0.5)";
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
@@ -2814,35 +2816,149 @@ if (authorPhotoOverlay) {
   });
 }
 
-(function generateHeroBars() {
-  const palette = [
-    "#3b82f6", "#2563eb", "#1d4ed8",
-    "#06b6d4", "#22d3ee", "#67e8f9",
-    "#10b981", "#34d399", "#6ee7b7",
-    "#f59e0b", "#fbbf24", "#f97316",
-    "#8b5cf6", "#a78bfa",
-  ];
-  const containers = [
-    document.getElementById("heroBarsLeft"),
-    document.getElementById("heroBarsRight"),
-  ];
-  const barCount = 28;
-  containers.forEach((el) => {
-    if (!el) return;
-    const frag = document.createDocumentFragment();
-    for (let i = 0; i < barCount; i++) {
-      const bar = document.createElement("span");
-      bar.className = "hero-bar";
-      const distFromEdge = i < barCount / 2 ? i : barCount - 1 - i;
-      const minH = 14;
-      const maxH = 140;
-      const height = minH + Math.random() * (maxH - minH) * (distFromEdge / (barCount / 2));
-      bar.style.height = height + "px";
-      bar.style.background = palette[Math.floor(Math.random() * palette.length)];
-      bar.style.opacity = 0.45 + Math.random() * 0.45;
-      frag.appendChild(bar);
+/* ── Theme toggle ──────────────────────────────────── */
+(function initTheme() {
+  const THEME_KEY = "statreads_theme";
+  const btn = document.getElementById("globalThemeToggle");
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+
+  const apply = (theme) => {
+    document.documentElement.setAttribute("data-theme", theme);
+    if (btn) btn.innerHTML = theme === "dark" ? "\u263E" : "\u2600";
+  };
+
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === "light" || saved === "dark") {
+    apply(saved);
+  } else {
+    apply(prefersDark.matches ? "dark" : "light");
+  }
+
+  if (btn) {
+    btn.addEventListener("click", () => {
+      const current = document.documentElement.getAttribute("data-theme") || (prefersDark.matches ? "dark" : "light");
+      const next = current === "dark" ? "light" : "dark";
+      localStorage.setItem(THEME_KEY, next);
+      apply(next);
+      if (typeof drawHeroLines === "function") drawHeroLines();
+    });
+  }
+
+  prefersDark.addEventListener("change", (e) => {
+    if (!localStorage.getItem(THEME_KEY)) {
+      apply(e.matches ? "dark" : "light");
+      if (typeof drawHeroLines === "function") drawHeroLines();
     }
-    el.appendChild(frag);
   });
 })();
+
+/* ── Hero line graphs ─────────────────────────────── */
+const HERO_W = 260, HERO_H = 180;
+const heroLineSeeds = { left: [], right: [] };
+let heroAnimFrame = null;
+let heroHovered = false;
+let heroAnimT = 0;
+
+function seedLine(w, h) {
+  const baseY = h * 0.3 + Math.random() * h * 0.4;
+  const amp = 18 + Math.random() * 18;
+  const freq = 0.6 + Math.random() * 0.6;
+  const phase = Math.random() * Math.PI * 2;
+  return { baseY, amp, freq, phase };
+}
+
+function initHeroLineSeeds() {
+  for (let i = 0; i < 3; i++) {
+    heroLineSeeds.left.push(seedLine(HERO_W, HERO_H));
+    heroLineSeeds.right.push(seedLine(HERO_W, HERO_H));
+  }
+}
+
+function getLineColors() {
+  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+  if (isDark) {
+    return [
+      { stroke: "rgba(50,96,128,0.5)", width: 1.8 },
+      { stroke: "rgba(181,210,230,0.35)", width: 1.4 },
+      { stroke: "rgba(128,82,50,0.4)", width: 1.6 },
+    ];
+  }
+  return [
+    { stroke: "rgba(50,96,128,0.3)", width: 1.8 },
+    { stroke: "rgba(181,180,170,0.25)", width: 1.4 },
+    { stroke: "rgba(160,110,75,0.25)", width: 1.6 },
+  ];
+}
+
+function evalLine(seed, x, w, h, t) {
+  const norm = x / w;
+  const wave = Math.sin(norm * Math.PI * seed.freq * 2 + seed.phase + t * 0.8);
+  return seed.baseY + wave * seed.amp;
+}
+
+function drawSmoothLine(ctx, seed, w, h, t) {
+  const steps = 80;
+  ctx.beginPath();
+  for (let i = 0; i <= steps; i++) {
+    const x = (i / steps) * w;
+    const y = Math.max(6, Math.min(h - 6, evalLine(seed, x, w, h, t)));
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawHeroLines() {
+  const colors = getLineColors();
+  ["Left", "Right"].forEach((side) => {
+    const canvas = document.getElementById("heroLine" + side);
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = HERO_W * dpr;
+    canvas.height = HERO_H * dpr;
+    canvas.style.width = HERO_W + "px";
+    canvas.style.height = HERO_H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, HERO_W, HERO_H);
+
+    const seeds = heroLineSeeds[side.toLowerCase()];
+    seeds.forEach((seed, i) => {
+      const c = colors[i % colors.length];
+      ctx.strokeStyle = c.stroke;
+      ctx.lineWidth = c.width;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      drawSmoothLine(ctx, seed, HERO_W, HERO_H, heroHovered ? heroAnimT : 0);
+    });
+  });
+}
+
+function heroAnimLoop() {
+  heroAnimT += 0.02;
+  drawHeroLines();
+  if (heroHovered) {
+    heroAnimFrame = requestAnimationFrame(heroAnimLoop);
+  }
+}
+
+initHeroLineSeeds();
+drawHeroLines();
+
+const heroEl = document.querySelector(".dashboard-hero");
+if (heroEl) {
+  heroEl.addEventListener("mouseenter", () => {
+    heroHovered = true;
+    if (!heroAnimFrame) heroAnimLoop();
+  });
+  heroEl.addEventListener("mouseleave", () => {
+    heroHovered = false;
+    if (heroAnimFrame) {
+      cancelAnimationFrame(heroAnimFrame);
+      heroAnimFrame = null;
+    }
+    heroAnimT = 0;
+    drawHeroLines();
+  });
+}
 
