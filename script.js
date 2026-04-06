@@ -69,7 +69,7 @@ let latestSeriesData = [];
 // Optional manual metadata overrides (title or ISBN key).
 const OVERRIDES_STORAGE_KEY = "statreads_metadata_overrides_v1";
 const AUTHOR_OVERRIDES_KEY = "statreads_author_overrides_v1";
-const META_CACHE_KEY = "statreads_meta_cache_v1";
+const META_CACHE_KEY = "statreads_meta_cache_v4";
 
 const readMetaCache = () => {
   try {
@@ -109,6 +109,7 @@ const applyCacheToBook = (merged, cached) => {
   merged._fromCache = true;
 };
 let sharedOverrides = {};
+let sharedAuthorOverrides = {};
 let runtimeOverrides = {};
 
 const setVisibleView = (view) => {
@@ -293,11 +294,14 @@ const sourceTag = (value) => {
 const loadSharedOverrides = async () => {
   try {
     const resp = await fetch("./shared-overrides.json");
-    if (!resp.ok) return {};
+    if (!resp.ok) return { books: {}, authors: {} };
     const data = await resp.json();
-    return sanitizeOverridesMap(data);
+    const authors = data._authors || {};
+    const books = { ...data };
+    delete books._authors;
+    return { books: sanitizeOverridesMap(books), authors };
   } catch {
-    return {};
+    return { books: {}, authors: {} };
   }
 };
 
@@ -348,6 +352,8 @@ const ALLOWED_COVER_HOSTS = [
   "commons.wikimedia.org",
   "i.gr-assets.com",
   "s.gr-assets.com",
+  "images-na.ssl-images-goodreads.com",
+  "images.gr-assets.com",
   "upload.wikimedia.org",
   "cdn.kobo.com",
   "prodimage.images-bn.com",
@@ -1037,16 +1043,36 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
 
     try {
       const fetchJson = async (url) => {
-        const response = await fetch(url);
-        if (!response.ok) return null;
-        return response.json();
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        try {
+          const response = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeout);
+          if (!response.ok) return null;
+          return response.json();
+        } catch {
+          clearTimeout(timeout);
+          return null;
+        }
       };
 
-      // Primary: Open Library Search (first_publish_year is original year)
+      // Fire OpenLibrary + Google Books in parallel.
       const titleUrl = `https://openlibrary.org/search.json?title=${encodeURIComponent(book.title)}${
         book.authorHint ? `&author=${encodeURIComponent(book.authorHint)}` : ""
       }&limit=8&fields=key,title,author_name,author_key,first_publish_year,cover_i,subject,subject_place,place`;
-      let titlePayload = await fetchJson(titleUrl);
+      const googleQuery = book.isbn
+        ? `isbn:${book.isbn}`
+        : `intitle:${book.title}${book.authorHint ? `+inauthor:${book.authorHint}` : ""}`;
+      const googleUrl = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(
+        googleQuery
+      )}&maxResults=3&printType=books`;
+
+      const [titlePayload, googlePayload] = await Promise.all([
+        fetchJson(titleUrl),
+        fetchJson(googleUrl),
+      ]);
+
+      // --- Process OpenLibrary search results (primary source) ---
       if (titlePayload) {
         const docs = titlePayload.docs || [];
         const relatedDocs = getRelatedDocs(docs, book.title, 0.4);
@@ -1097,11 +1123,11 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
           }
           if (!merged.coverUrl && coverDoc && coverDoc.cover_i) {
             merged.coverUrl = `https://covers.openlibrary.org/b/id/${coverDoc.cover_i}-L.jpg`;
-            if (merged.coverUrl) setSource(merged, "coverUrl", "openlibrary");
+            setSource(merged, "coverUrl", "openlibrary");
           }
-
-          // Pull the work-level first publish date (original release) when available.
-          if (typeof bestDoc.key === "string" && bestDoc.key.startsWith("/works/")) {
+          // Work-level details: only fetch if we still need year, genres, cover, or page count.
+          const needsWork = !merged.publishedYear || merged.genres.length === 0 || !merged.coverUrl || merged.pageCount === null;
+          if (needsWork && typeof bestDoc.key === "string" && bestDoc.key.startsWith("/works/")) {
             const workPayload = await fetchJson(`https://openlibrary.org${bestDoc.key}.json`);
             if (workPayload) {
               const workFirstYear =
@@ -1110,8 +1136,6 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
                 merged.publishedYear = Math.min(merged.publishedYear || workFirstYear, workFirstYear);
                 setSource(merged, "publishedYear", "openlibrary");
               }
-
-              // Work-level taxonomy is often richer than search docs.
               const workGenreBefore = merged.genres.length;
               merged.rawSubjects = mergeUnique(merged.rawSubjects, workPayload.subjects || []);
               merged.genres = mergeUnique(merged.genres, extractGenres(workPayload.subjects || []));
@@ -1119,17 +1143,19 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
               const workCovers = workPayload.covers || [];
               if (!merged.coverUrl && workCovers.length > 0) {
                 merged.coverUrl = `https://covers.openlibrary.org/b/id/${workCovers[0]}-L.jpg`;
-                if (merged.coverUrl) setSource(merged, "coverUrl", "openlibrary");
+                setSource(merged, "coverUrl", "openlibrary");
               }
 
-              if (!merged.coverUrl || merged.pageCount === null) {
-                const editionsPayload = await fetchJson(`https://openlibrary.org${bestDoc.key}/editions.json?limit=12`);
+              if ((!merged.coverUrl || merged.pageCount === null)) {
+                const editionsPayload = await fetchJson(`https://openlibrary.org${bestDoc.key}/editions.json?limit=8`);
                 if (editionsPayload && Array.isArray(editionsPayload.entries)) {
                   const entries = editionsPayload.entries;
-                  const withCover = entries.find((entry) => entry.covers && entry.covers.length > 0);
-                  if (!merged.coverUrl && withCover) {
-                    merged.coverUrl = `https://covers.openlibrary.org/b/id/${withCover.covers[0]}-L.jpg`;
-                    if (merged.coverUrl) setSource(merged, "coverUrl", "openlibrary");
+                  if (!merged.coverUrl) {
+                    const withCover = entries.find((entry) => entry.covers && entry.covers.length > 0);
+                    if (withCover) {
+                      merged.coverUrl = `https://covers.openlibrary.org/b/id/${withCover.covers[0]}-L.jpg`;
+                      setSource(merged, "coverUrl", "openlibrary");
+                    }
                   }
                   if (merged.pageCount === null) {
                     const withPages = entries.find((entry) => entry.number_of_pages && entry.number_of_pages > 0);
@@ -1139,94 +1165,59 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
               }
             }
           }
-        }
-      }
 
-      // Third source: Wikidata for canonical fields when still missing/sparse.
-      // Wikidata lookup removed by request: use OpenLibrary + Google only.
-
-      // Fallback: Google Books for missing author/cover/rating/pageCount (but not year)
-      if (merged.authors.length === 0 || !merged.coverUrl || merged.apiRating === null || merged.pageCount === null) {
-        const query = book.isbn
-          ? `isbn:${book.isbn}`
-          : `intitle:${book.title}${book.authorHint ? `+inauthor:${book.authorHint}` : ""}`;
-        const googleUrl = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(
-          query
-        )}&maxResults=3&printType=books`;
-        const googlePayload = await fetchJson(googleUrl);
-        if (googlePayload) {
-          const items = googlePayload.items || [];
-          const withCover = items.find(
-            (entry) => entry?.volumeInfo?.imageLinks?.thumbnail || entry?.volumeInfo?.imageLinks?.smallThumbnail
-          );
-          const withYear = items.find((entry) => parsePublishedYear(entry?.volumeInfo?.publishedDate));
-          const bestItem = withCover || withYear || items[0];
-          if (bestItem && bestItem.volumeInfo) {
-            const info = bestItem.volumeInfo;
-            merged.authors = mergeUnique(merged.authors || [], info.authors || []);
-            const gGenreBefore = merged.genres.length;
-            merged.rawSubjects = mergeUnique(merged.rawSubjects, info.categories || []);
-            merged.genres = mergeUnique(merged.genres, extractGenres(info.categories || []));
-            if (merged.genres.length > gGenreBefore && !merged._sources.genres) setSource(merged, "genres", "google");
-            if (!merged.coverUrl) {
-              merged.coverUrl = (info.imageLinks?.thumbnail || info.imageLinks?.smallThumbnail || "").replace(/^http:\/\//i, "https://");
-              if (merged.coverUrl) setSource(merged, "coverUrl", "google");
-            }
-            if (merged.apiRating === null && typeof info.averageRating === "number") {
-              merged.apiRating = info.averageRating;
-              setSource(merged, "apiRating", "google");
-            }
-            if (merged.pageCount === null && typeof info.pageCount === "number" && info.pageCount > 0) {
-              merged.pageCount = info.pageCount;
-            }
-          }
-          if (merged.pageCount === null) {
-            const withPages = items.find((entry) => entry?.volumeInfo?.pageCount > 0);
-            if (withPages) merged.pageCount = withPages.volumeInfo.pageCount;
-          }
-          if (!merged.seriesName) {
-            for (const entry of items) {
-              const sd = detectSeriesFromTitle(entry?.volumeInfo?.title, entry?.volumeInfo?.subtitle);
-              if (sd) { merged.seriesName = sd.name; merged.seriesNumber = sd.number; break; }
+          // Author-level country signal (only if still missing).
+          if (merged.countries.length === 0) {
+            const docWithAuthor = docs.find((doc) => Array.isArray(doc.author_key) && doc.author_key.length > 0);
+            if (docWithAuthor) {
+              const authorKey = docWithAuthor.author_key[0];
+              const authorPayload = await fetchJson(`https://openlibrary.org/authors/${authorKey}.json`);
+              if (authorPayload) merged.countries = mergeUnique(merged.countries, inferCountriesFromAuthorPayload(authorPayload));
             }
           }
         }
       }
 
-      // Author-level fallback for country signal.
-      if (merged.countries.length === 0 && titlePayload && Array.isArray(titlePayload.docs)) {
-        const docWithAuthor = titlePayload.docs.find((doc) => Array.isArray(doc.author_key) && doc.author_key.length > 0);
-        if (docWithAuthor) {
-          const authorKey = docWithAuthor.author_key[0];
-          const authorPayload = await fetchJson(`https://openlibrary.org/authors/${authorKey}.json`);
-          if (authorPayload) merged.countries = mergeUnique(merged.countries, inferCountriesFromAuthorPayload(authorPayload));
-        }
-      }
-
-      // Last-pass title-only cover fallback from Open Library if still empty.
-      if (!merged.coverUrl) {
-        const broadPayload = await fetchJson(
-          `https://openlibrary.org/search.json?title=${encodeURIComponent(
-            book.title
-          )}&limit=20&fields=key,title,author_name,author_key,first_publish_year,cover_i,subject,subject_place,place`
+      // --- Merge Google Books results (fill gaps left by OpenLibrary) ---
+      if (googlePayload) {
+        const items = googlePayload.items || [];
+        const withCover = items.find(
+          (entry) => entry?.volumeInfo?.imageLinks?.thumbnail || entry?.volumeInfo?.imageLinks?.smallThumbnail
         );
-        if (broadPayload && Array.isArray(broadPayload.docs)) {
-          const relatedDocs = getRelatedDocs(broadPayload.docs, book.title, 0.35);
-          const coverDoc = relatedDocs.find((doc) => doc.cover_i) || broadPayload.docs.find((doc) => doc.cover_i);
-          if (coverDoc) {
-            merged.coverUrl = `https://covers.openlibrary.org/b/id/${coverDoc.cover_i}-L.jpg`;
-            if (merged.coverUrl) setSource(merged, "coverUrl", "openlibrary");
+        const withYear = items.find((entry) => parsePublishedYear(entry?.volumeInfo?.publishedDate));
+        const bestItem = withCover || withYear || items[0];
+        if (bestItem && bestItem.volumeInfo) {
+          const info = bestItem.volumeInfo;
+          merged.authors = mergeUnique(merged.authors || [], info.authors || []);
+          const gGenreBefore = merged.genres.length;
+          merged.rawSubjects = mergeUnique(merged.rawSubjects, info.categories || []);
+          merged.genres = mergeUnique(merged.genres, extractGenres(info.categories || []));
+          if (merged.genres.length > gGenreBefore && !merged._sources.genres) setSource(merged, "genres", "google");
+          if (!merged.coverUrl) {
+            merged.coverUrl = (info.imageLinks?.thumbnail || info.imageLinks?.smallThumbnail || "").replace(/^http:\/\//i, "https://");
+            if (merged.coverUrl) setSource(merged, "coverUrl", "google");
           }
-          if (merged.genres.length === 0) {
-            const relatedSubjects = (relatedDocs.length > 0 ? relatedDocs : broadPayload.docs).flatMap((doc) => doc.subject || []);
-            merged.rawSubjects = mergeUnique(merged.rawSubjects, relatedSubjects);
-            merged.genres = mergeUnique(merged.genres, extractGenres(relatedSubjects));
-            if (merged.genres.length > 0 && !merged._sources.genres) setSource(merged, "genres", "openlibrary");
+          if (merged.apiRating === null && typeof info.averageRating === "number") {
+            merged.apiRating = info.averageRating;
+            setSource(merged, "apiRating", "google");
+          }
+          if (merged.pageCount === null && typeof info.pageCount === "number" && info.pageCount > 0) {
+            merged.pageCount = info.pageCount;
+          }
+        }
+        if (merged.pageCount === null) {
+          const withPages = items.find((entry) => entry?.volumeInfo?.pageCount > 0);
+          if (withPages) merged.pageCount = withPages.volumeInfo.pageCount;
+        }
+        if (!merged.seriesName) {
+          for (const entry of items) {
+            const sd = detectSeriesFromTitle(entry?.volumeInfo?.title, entry?.volumeInfo?.subtitle);
+            if (sd) { merged.seriesName = sd.name; merged.seriesNumber = sd.number; break; }
           }
         }
       }
 
-      // Final broad Google fallback — only if cover is still missing (the most visible gap).
+      // Last-resort cover fallback: broad Google search.
       if (!merged.coverUrl) {
         const broadGooglePayload = await fetchJson(
           `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(
@@ -1266,7 +1257,7 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
     if (onProgress) onProgress(completed, total, "books");
   };
 
-  const BATCH_SIZE = 12;
+  const BATCH_SIZE = 15;
   for (let i = 0; i < booksList.length; i += BATCH_SIZE) {
     const batch = booksList.slice(i, i + BATCH_SIZE);
     await Promise.allSettled(batch.map((book) => processBook(book)));
@@ -1704,21 +1695,47 @@ const renderYearSection = (booksMeta, mode = "books") => {
   const bars = [];
   yearList.forEach((year) => {
     const value = valueByYear.get(year) || 0;
-    const heightRatio = value > 0 ? value / positiveMax : (sparseMode ? 0.04 : 0.02);
-    const barHeight = Math.max(2, Math.round(120 * heightRatio));
+    const heightRatio = value > 0 ? value / positiveMax : 0;
+    const barHeight = value > 0 ? Math.max(4, Math.round(130 * heightRatio)) : 0;
     const mix = (year - minYear) / Math.max(1, yearRange);
-    const hue = mode === "ratings" ? 44 : Math.round(156 + mix * 36);
-    const opacity = value > 0 ? 0.96 : 0.28;
-    const titleValue = mode === "ratings" ? value.toFixed(2) : String(value);
-    const suffix = mode === "ratings" ? "avg rating" : "book(s)";
-    bars.push(
-      `<span class="year-bar" style="height:${barHeight}px;background:hsl(${hue},82%,57%);opacity:${opacity}" title="${year}: ${titleValue} ${suffix}"></span>`
-    );
+    if (mode === "ratings") {
+      const lum = 52 + mix * 8;
+      bars.push(
+        `<span class="year-bar${value > 0 ? "" : " year-bar-empty"}" data-year="${year}" data-value="${value > 0 ? "Average " + value.toFixed(2) : ""}" data-label="Published in ${year}" style="height:${barHeight}px;background:hsl(40,78%,${lum}%)"></span>`
+      );
+    } else {
+      const hue = Math.round(156 + mix * 40);
+      const sat = 72 + mix * 10;
+      const lum = 48 + mix * 10;
+      const label = value === 1 ? "1 book" : `${value} books`;
+      bars.push(
+        `<span class="year-bar${value > 0 ? "" : " year-bar-empty"}" data-year="${year}" data-value="${value > 0 ? label : ""}" data-label="Published in ${year}" style="height:${barHeight}px;background:hsl(${hue},${sat}%,${lum}%)"></span>`
+      );
+    }
   });
 
-  yearChart.innerHTML = bars.join("");
+  yearChart.innerHTML = bars.join("") + '<div class="year-tooltip" id="yearTooltip"></div>';
   yearMin.textContent = String(minYear);
   yearMax.textContent = String(maxYear);
+
+  const tooltip = yearChart.querySelector(".year-tooltip");
+  if (tooltip) {
+    yearChart.addEventListener("mouseover", (e) => {
+      const bar = e.target.closest(".year-bar");
+      if (!bar || !bar.dataset.value) { tooltip.style.opacity = "0"; return; }
+      tooltip.innerHTML = `<strong>${bar.dataset.value}</strong><span>${bar.dataset.label}</span>`;
+      tooltip.style.opacity = "1";
+      const rect = bar.getBoundingClientRect();
+      const parentRect = yearChart.getBoundingClientRect();
+      let left = rect.left - parentRect.left + rect.width / 2 - 70;
+      left = Math.max(0, Math.min(left, parentRect.width - 140));
+      tooltip.style.left = left + "px";
+      tooltip.style.bottom = (parentRect.bottom - rect.top + 8) + "px";
+    });
+    yearChart.addEventListener("mouseout", (e) => {
+      if (!e.relatedTarget || !yearChart.contains(e.relatedTarget)) tooltip.style.opacity = "0";
+    });
+  }
 };
 
 const setYearTab = (mode) => {
@@ -2080,7 +2097,7 @@ const loadAuthorPhotos = (container) => {
       const card = cards[idx++];
       if (card.dataset.photoLoaded) continue;
       const name = card.dataset.author;
-      const overrideUrl = authorOverrides[name]?.photoUrl;
+      const overrideUrl = authorOverrides[name]?.photoUrl || sharedAuthorOverrides[name]?.photoUrl;
       if (overrideUrl) {
         card.dataset.photoLoaded = "1";
         applyAuthorPhotoToCard(card, overrideUrl, name);
@@ -2368,7 +2385,7 @@ const rerenderFromCurrentMetadata = () => {
 };
 
 runtimeOverrides = readOverridesFromStorage();
-loadSharedOverrides().then((data) => { sharedOverrides = data; });
+loadSharedOverrides().then((data) => { sharedOverrides = data.books; sharedAuthorOverrides = data.authors; });
 
 const renderDecadesSection = (booksMeta) => {
   booksMeta.forEach((book) => {
@@ -2686,6 +2703,7 @@ const authorPopupTitle = document.getElementById("authorPopupTitle");
 const authorPopupKey = document.getElementById("authorPopupKey");
 const authorPopupUrl = document.getElementById("authorPopupUrl");
 const authorPopupSave = document.getElementById("authorPopupSave");
+const authorPopupSubmit = document.getElementById("authorPopupSubmit");
 const authorPopupClear = document.getElementById("authorPopupClear");
 const authorPopupCancel = document.getElementById("authorPopupCancel");
 
@@ -2744,6 +2762,27 @@ if (authorPopupSave) {
       }
     }
     closeAuthorPopup();
+  });
+}
+
+if (authorPopupSubmit) {
+  authorPopupSubmit.addEventListener("click", () => {
+    const name = authorPopupKey.value;
+    if (!name) return;
+    const entry = authorOverrides[name];
+    if (!entry || !entry.photoUrl) {
+      alert("Save the author photo override first, then submit.");
+      return;
+    }
+    const json = JSON.stringify({ [name]: entry }, null, 2);
+    const title = encodeURIComponent(`[Author Override] ${name}`);
+    const body = encodeURIComponent(
+      `### Author\n**${name}**\n\n### Override JSON\n\`\`\`json\n${json}\n\`\`\`\n\n### Why\n_Briefly describe what was wrong or missing._`
+    );
+    window.open(
+      `https://github.com/${GITHUB_REPO}/issues/new?title=${title}&body=${body}&labels=override`,
+      "_blank"
+    );
   });
 }
 
