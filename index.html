@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <button id="globalThemeToggle" class="global-theme-toggle" type="button" title="Toggle theme" aria-label="Toggle light/dark theme">&#9790;</button>
+    <button id="globalThemeToggle" class="global-theme-toggle" type="button" title="Toggle theme" aria-label="Toggle light/dark theme"><svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg></button>
     <main id="uploadView" class="landing view is-visible">
       <header class="brand">
         <div class="brand-main">
@@ -27,11 +27,11 @@
       </p>
 
       <section class="uploader-section">
-        <label for="csvInput" id="dropzone" class="dropzone" tabindex="0">
+        <div id="dropzone" class="dropzone" tabindex="0" role="button">
           <span id="dropzoneText">
             Drag 'n' drop CSV file here, or click to select file
           </span>
-        </label>
+        </div>
         <input id="csvInput" type="file" accept=".csv,text/csv" />
       </section>
     </main>
@@ -59,7 +59,7 @@
 
     <section id="dashboardView" class="dashboard view">
       <header class="dashboard-hero">
-        <canvas id="heroLineLeft" class="hero-line-canvas hero-line-canvas-left" width="260" height="180"></canvas>
+        <canvas id="heroLineLeft" class="hero-line-canvas hero-line-canvas-left" width="300" height="180"></canvas>
         <div class="hero-center">
           <h1 class="hero-title">A Life in Books</h1>
           <div class="hero-badge-row">
@@ -73,7 +73,7 @@
             <p id="loadingText" class="loading-text">Fetching metadata…</p>
           </div>
         </div>
-        <canvas id="heroLineRight" class="hero-line-canvas hero-line-canvas-right" width="260" height="180"></canvas>
+        <canvas id="heroLineRight" class="hero-line-canvas hero-line-canvas-right" width="300" height="180"></canvas>
       </header>
 
       <section class="stats-strip">
@@ -208,6 +208,36 @@
         </div>
       </section>
 
+      <section class="reading-pace-section">
+        <div class="line-heading">
+          <span>READING PACE</span>
+          <span class="line-divider"></span>
+        </div>
+        <div class="reading-pace-chart-wrap">
+          <canvas id="readingPaceCanvas"></canvas>
+        </div>
+      </section>
+
+      <section class="scatter-section">
+        <div class="line-heading">
+          <span>BOOK LENGTH vs RATING</span>
+          <span class="line-divider"></span>
+        </div>
+        <div class="scatter-chart-wrap">
+          <canvas id="scatterCanvas"></canvas>
+        </div>
+      </section>
+
+      <section class="radar-section">
+        <div class="line-heading">
+          <span>GENRE PROFILE</span>
+          <span class="line-divider"></span>
+        </div>
+        <div class="radar-chart-wrap">
+          <canvas id="radarCanvas"></canvas>
+        </div>
+      </section>
+
       <section class="authors-section">
         <div class="insights-top">
           <div class="line-heading">
@@ -250,7 +280,7 @@
           <span class="line-divider"></span>
         </div>
         <div class="metadata-actions">
-          <p class="metadata-help-text">APIs are not always reliable, so use overrides when any book metadata is missing or incorrect.</p>
+          <p class="metadata-help-text">APIs are not always reliable — override any missing or incorrect book/author data locally, and hit "Submit to Community" so everyone benefits.</p>
         </div>
         <div id="metadataSourcesWrap" class="metadata-wrap">
           <p class="section-loading">Upload and confirm CSV to view metadata source tags.</p>
@@ -304,7 +334,9 @@
         }
         document.documentElement.setAttribute("data-theme", theme);
         var btn = document.getElementById("globalThemeToggle");
-        if (btn) btn.innerHTML = theme === "dark" ? "\u263E" : "\u2600";
+        var moonSvg = '<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg>';
+        var sunSvg = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="12" y1="21" x2="12" y2="23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="1" y1="12" x2="3" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="21" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+        if (btn) btn.innerHTML = theme === "dark" ? moonSvg : sunSvg;
       })();
     </script>
     <script src="./script.js"></script>

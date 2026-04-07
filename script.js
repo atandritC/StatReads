@@ -762,7 +762,10 @@ const buildStats = (headers, rows, source) => {
       const isbn = (isbnRaw || "").replace(/[^0-9Xx]/g, "");
       const publishedYearHint = extractYearHintFromRow(row, idx, source);
       const authorHint = extractAuthorHintFromRow(row, idx, source);
-      bookMap.set(title, { title, isbn, publishedYearHint, authorHint, userRatings: [], timesRead: 0 });
+      const dateReadRaw = source === "StoryGraph"
+        ? getCell(row, idx, "Last Date Read") || getCell(row, idx, "Date Read")
+        : getCell(row, idx, "Date Read");
+      bookMap.set(title, { title, isbn, publishedYearHint, authorHint, userRatings: [], timesRead: 0, dateRead: dateReadRaw || null });
     }
     if (title && bookMap.has(title)) {
       const entry = bookMap.get(title);
@@ -802,6 +805,7 @@ const buildStats = (headers, rows, source) => {
       authorHint: book.authorHint || "",
       userRating,
       timesRead: book.timesRead || 1,
+      dateRead: book.dateRead || null,
     };
   });
 
@@ -1698,17 +1702,18 @@ const renderYearSection = (booksMeta, mode = "books") => {
     const heightRatio = value > 0 ? value / positiveMax : 0;
     const barHeight = value > 0 ? Math.max(4, Math.round(130 * heightRatio)) : 0;
     const mix = (year - minYear) / Math.max(1, yearRange);
+    const isDark = document.documentElement.getAttribute("data-theme") !== "light";
     if (mode === "ratings") {
-      const r = Math.round(128 + mix * 50);
-      const g = Math.round(82 + mix * 40);
-      const b = Math.round(50 + mix * 30);
+      let r, g, b;
+      if (isDark) { r = Math.round(230 + mix * 20); g = Math.round(170 + mix * 20); b = Math.round(70 + mix * 20); }
+      else { r = Math.round(100 - mix * 15); g = Math.round(60 - mix * 10); b = Math.round(35 + mix * 10); }
       bars.push(
         `<span class="year-bar${value > 0 ? "" : " year-bar-empty"}" data-year="${year}" data-value="${value > 0 ? "Average " + value.toFixed(2) : ""}" data-label="Published in ${year}" style="height:${barHeight}px;background:rgb(${r},${g},${b})"></span>`
       );
     } else {
-      const r = Math.round(50 - mix * 10);
-      const g = Math.round(96 + mix * 60);
-      const b = Math.round(128 + mix * 50);
+      let r, g, b;
+      if (isDark) { r = Math.round(90 + mix * 20); g = Math.round(200 + mix * 40); b = Math.round(235 + mix * 15); }
+      else { r = Math.round(25 + mix * 15); g = Math.round(55 + mix * 25); b = Math.round(85 + mix * 20); }
       const label = value === 1 ? "1 book" : `${value} books`;
       bars.push(
         `<span class="year-bar${value > 0 ? "" : " year-bar-empty"}" data-year="${year}" data-value="${value > 0 ? label : ""}" data-label="Published in ${year}" style="height:${barHeight}px;background:rgb(${r},${g},${b})"></span>`
@@ -1838,90 +1843,67 @@ const setTaxonomyTab = (mode) => {
   renderTaxonomySection(latestBooksMeta, currentTaxonomyMode);
 };
 
-const PIE_COLORS = [
-  "#326080", "#805232", "#5a9cc0", "#b07a55", "#B5D2E6",
-  "#a06840", "#3d7a9e", "#c4956a", "#2a4e6a", "#d4a87a",
-  "#6aaac8", "#9a6a42",
-];
+const getPieColors = () => {
+  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+  if (isDark) {
+    return [
+      "#6ccef0", "#f0b858", "#78f0b0", "#f0d078", "#d098e8",
+      "#60e098", "#e8a048", "#58c8e8", "#e8c888", "#90d8f0",
+      "#b8e0a8", "#f0c878",
+    ];
+  }
+  return [
+    "#2a5570", "#704828", "#3a7898", "#886040", "#584870",
+    "#386850", "#805830", "#2e6888", "#a08058", "#1e4858",
+    "#486848", "#785028",
+  ];
+};
 
-const draw3dPie = (canvas, rows, mode) => {
+const draw2dPie = (canvas, rows) => {
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
-  const w = 320;
-  const h = 320;
+  const w = 300, h = 300;
   canvas.width = w * dpr;
   canvas.height = h * dpr;
   canvas.style.width = w + "px";
   canvas.style.height = h + "px";
-  ctx.scale(dpr, dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
   if (!rows || rows.length === 0) return;
-
   const total = rows.reduce((s, r) => s + r.value, 0);
   if (total <= 0) return;
 
-  const cx = w / 2;
-  const cy = h / 2 - 10;
-  const rx = w * 0.38;
-  const ry = rx * 0.55;
-  const depth = 18;
+  const cc = getChartColors();
+  const cx = w / 2, cy = h / 2;
+  const r = w * 0.4;
 
-  const slices = rows.map((r, i) => ({
-    name: r.name,
-    value: r.value,
-    fraction: r.value / total,
-    color: PIE_COLORS[i % PIE_COLORS.length],
-  }));
+  ctx.save();
+  ctx.shadowColor = cc.isDark ? "rgba(0,0,0,0.5)" : "rgba(80,50,30,0.2)";
+  ctx.shadowBlur = 16;
+  ctx.shadowOffsetY = 6;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = cc.isDark ? "#1a3050" : "#e8dcd0";
+  ctx.fill();
+  ctx.restore();
 
-  const darken = (hex, amt) => {
-    const num = parseInt(hex.slice(1), 16);
-    const r = Math.max(0, (num >> 16) - amt);
-    const g = Math.max(0, ((num >> 8) & 0xff) - amt);
-    const b = Math.max(0, (num & 0xff) - amt);
-    return `rgb(${r},${g},${b})`;
-  };
-
-  // Draw side faces (3D depth) for slices visible at the bottom
   let angle = -Math.PI / 2;
-  slices.forEach((slice) => {
-    const startAngle = angle;
-    const sweep = slice.fraction * Math.PI * 2;
-    const endAngle = startAngle + sweep;
-
-    ctx.beginPath();
-    for (let a = startAngle; a <= endAngle; a += 0.02) {
-      ctx.lineTo(cx + rx * Math.cos(a), cy + ry * Math.sin(a) + depth);
-    }
-    for (let a = endAngle; a >= startAngle; a -= 0.02) {
-      ctx.lineTo(cx + rx * Math.cos(a), cy + ry * Math.sin(a));
-    }
-    ctx.closePath();
-    ctx.fillStyle = darken(slice.color, 55);
-    ctx.fill();
-
-    angle = endAngle;
-  });
-
-  // Draw top face
-  angle = -Math.PI / 2;
-  slices.forEach((slice) => {
-    const startAngle = angle;
-    const sweep = slice.fraction * Math.PI * 2;
-    const endAngle = startAngle + sweep;
-
+  rows.forEach((row, i) => {
+    const sweep = (row.value / total) * Math.PI * 2;
     ctx.beginPath();
     ctx.moveTo(cx, cy);
-    ctx.ellipse(cx, cy, rx, ry, 0, startAngle, endAngle);
+    ctx.arc(cx, cy, r, angle, angle + sweep);
     ctx.closePath();
-    ctx.fillStyle = slice.color;
+    ctx.fillStyle = getPieColors()[i % getPieColors().length];
     ctx.fill();
-    ctx.strokeStyle = "rgba(10,26,40,0.5)";
+    ctx.strokeStyle = cc.pieSep;
     ctx.lineWidth = 1.5;
     ctx.stroke();
-
-    angle = endAngle;
+    angle += sweep;
   });
+
+  canvas._pieData = { rows, cx, cy, r };
 };
 
 const renderThemeLegend = (container, rows, mode) => {
@@ -1932,7 +1914,7 @@ const renderThemeLegend = (container, rows, mode) => {
   const total = rows.reduce((s, r) => s + r.value, 0);
   container.innerHTML = rows
     .map((row, i) => {
-      const color = PIE_COLORS[i % PIE_COLORS.length];
+      const color = getPieColors()[i % getPieColors().length];
       const label = mode === "most-read"
         ? `${row.name} (${row.value})`
         : `${row.name} (${row.value.toFixed(1)})`;
@@ -1970,9 +1952,9 @@ const renderThemesSection = (booksMeta) => {
   const mostReadRows = getThemeRows(booksMeta, "most-read").slice(0, 10);
   const highestRatedRows = getThemeRows(booksMeta, "highest-rated").slice(0, 10);
 
-  if (mostReadCanvas) draw3dPie(mostReadCanvas, mostReadRows, "most-read");
+  if (mostReadCanvas) draw2dPie(mostReadCanvas, mostReadRows);
   renderThemeLegend(mostReadLegend, mostReadRows, "most-read");
-  if (highestRatedCanvas) draw3dPie(highestRatedCanvas, highestRatedRows, "highest-rated");
+  if (highestRatedCanvas) draw2dPie(highestRatedCanvas, highestRatedRows);
   renderThemeLegend(highestRatedLegend, highestRatedRows, "highest-rated");
 };
 
@@ -2245,6 +2227,389 @@ const renderMostRead = (booksMeta) => {
     .join("");
 };
 
+/* ── Theme-aware chart palette helper ─────────────── */
+const getChartColors = () => {
+  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+  return {
+    isDark,
+    axis: isDark ? "rgba(200,220,240,0.3)" : "rgba(100,70,45,0.2)",
+    axisLabel: isDark ? "rgba(200,220,240,0.8)" : "rgba(70,50,35,0.7)",
+    gridLine: isDark ? "rgba(200,220,240,0.18)" : "rgba(100,70,45,0.14)",
+    primary: isDark ? "#6ccef0" : "#2a5570",
+    primaryFill: isDark ? "rgba(108,206,240,0.25)" : "rgba(42,85,112,0.15)",
+    secondary: isDark ? "#f0b858" : "#704828",
+    secondaryFill: isDark ? "rgba(240,184,88,0.2)" : "rgba(112,72,40,0.1)",
+    dot: isDark
+      ? ["#6ccef0","#78f0b0","#f0b858","#f0d078","#d098e8","#60e098","#e8a048","#58c8e8"]
+      : ["#2a5570","#486848","#704828","#886040","#584870","#386850","#805830","#3a7898"],
+    radarFill: isDark ? "rgba(108,206,240,0.2)" : "rgba(42,85,112,0.12)",
+    radarStroke: isDark ? "rgba(108,206,240,0.8)" : "rgba(42,85,112,0.6)",
+    radarDot: isDark ? "#6ccef0" : "#2a5570",
+    text: isDark ? "rgba(255,245,235,0.9)" : "rgba(35,25,18,0.85)",
+    textDim: isDark ? "rgba(255,245,235,0.6)" : "rgba(35,25,18,0.5)",
+    tooltipBg: isDark ? "rgba(10,26,40,0.94)" : "rgba(248,240,232,0.96)",
+    tooltipBorder: isDark ? "rgba(200,220,240,0.3)" : "rgba(100,70,45,0.2)",
+    pieSep: isDark ? "rgba(10,26,40,0.6)" : "rgba(240,230,218,0.7)",
+  };
+};
+
+/* ── Reading Pace chart (with line-redraw hover animation) ── */
+let _paceAnimFrame = null;
+const renderReadingPace = (booksMeta) => {
+  const canvas = document.getElementById("readingPaceCanvas");
+  if (!canvas) return;
+  if (_paceAnimFrame) { cancelAnimationFrame(_paceAnimFrame); _paceAnimFrame = null; }
+
+  const booksWithDate = booksMeta.filter((b) => b.dateRead);
+  if (booksWithDate.length === 0) {
+    canvas.parentElement.innerHTML = '<p class="section-empty">No date-read data available.</p>';
+    return;
+  }
+
+  const monthly = new Map();
+  const monthlyPages = new Map();
+  booksWithDate.forEach((b) => {
+    const d = new Date(b.dateRead);
+    if (isNaN(d.getTime())) return;
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    monthly.set(key, (monthly.get(key) || 0) + 1);
+    monthlyPages.set(key, (monthlyPages.get(key) || 0) + (b.pageCount || 0));
+  });
+
+  if (monthly.size === 0) {
+    canvas.parentElement.innerHTML = '<p class="section-empty">No valid date-read data.</p>';
+    return;
+  }
+
+  const keys = Array.from(monthly.keys()).sort();
+  const first = keys[0], last = keys[keys.length - 1];
+  const allMonths = [];
+  const [fy, fm] = first.split("-").map(Number);
+  const [ly, lm] = last.split("-").map(Number);
+  for (let y = fy, m = fm; y < ly || (y === ly && m <= lm); m++) {
+    if (m > 12) { m = 1; y++; }
+    allMonths.push(`${y}-${String(m).padStart(2, "0")}`);
+  }
+
+  const bookCounts = allMonths.map((k) => monthly.get(k) || 0);
+  const pageCounts = allMonths.map((k) => monthlyPages.get(k) || 0);
+  const maxBooks = Math.max(...bookCounts, 1);
+  const maxPages = Math.max(...pageCounts, 1);
+
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.min(1100, Math.max(600, allMonths.length * 28));
+  const H = 260;
+  const pad = { top: 20, right: 50, bottom: 40, left: 44 };
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  const ctx = canvas.getContext("2d");
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+  const xStep = plotW / Math.max(1, allMonths.length - 1);
+  const totalLen = allMonths.length;
+
+  let progress = 1;
+
+  const drawFrame = () => {
+    const cc = getChartColors();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + plotH - (i / 4) * plotH;
+      ctx.strokeStyle = cc.gridLine; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+      ctx.fillStyle = cc.axisLabel; ctx.font = "10px sans-serif"; ctx.textAlign = "right";
+      ctx.fillText(Math.round((maxBooks / 4) * i), pad.left - 6, y + 3);
+    }
+
+    ctx.fillStyle = cc.axisLabel; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+    const labelEvery = Math.max(1, Math.floor(allMonths.length / 12));
+    allMonths.forEach((k, i) => {
+      if (i % labelEvery === 0 || i === allMonths.length - 1) {
+        ctx.fillText(k.slice(2).replace("-", "/"), pad.left + i * xStep, H - pad.bottom + 16);
+      }
+    });
+
+    const visibleCount = Math.max(1, Math.ceil(progress * totalLen));
+
+    const drawArea = (values, max, strokeColor, fillColor) => {
+      ctx.beginPath();
+      for (let i = 0; i < visibleCount && i < values.length; i++) {
+        const x = pad.left + i * xStep;
+        const y = pad.top + plotH - (values[i] / max) * plotH;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = strokeColor; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.stroke();
+      const lastI = Math.min(visibleCount - 1, values.length - 1);
+      ctx.lineTo(pad.left + lastI * xStep, pad.top + plotH);
+      ctx.lineTo(pad.left, pad.top + plotH);
+      ctx.closePath();
+      ctx.fillStyle = fillColor; ctx.fill();
+    };
+
+    drawArea(pageCounts, maxPages, cc.secondary, cc.secondaryFill);
+    drawArea(bookCounts, maxBooks, cc.primary, cc.primaryFill);
+
+    const legendY = 10;
+    ctx.font = "11px sans-serif";
+    [{ label: "Books", color: cc.primary, x: W - pad.right - 120 },
+     { label: "Pages", color: cc.secondary, x: W - pad.right - 40 }].forEach((l) => {
+      ctx.fillStyle = l.color; ctx.fillRect(l.x, legendY, 10, 10);
+      ctx.fillStyle = cc.text; ctx.textAlign = "left"; ctx.fillText(l.label, l.x + 14, legendY + 9);
+    });
+  };
+
+  let drawing = false;
+
+  const animate = () => {
+    progress += 0.008;
+    if (progress >= 1) { progress = 1; drawing = false; }
+    drawFrame();
+    if (drawing) _paceAnimFrame = requestAnimationFrame(animate);
+  };
+
+  drawFrame();
+
+  canvas.onmouseenter = () => { progress = 0; drawing = true; if (_paceAnimFrame) cancelAnimationFrame(_paceAnimFrame); drawFrame(); _paceAnimFrame = requestAnimationFrame(animate); };
+  canvas.onmouseleave = () => { drawing = false; progress = 1; if (_paceAnimFrame) cancelAnimationFrame(_paceAnimFrame); drawFrame(); };
+};
+
+/* ── Scatter plot (dots lift on hover) ──────────── */
+let _scatterAnimFrame = null;
+const renderScatterPlot = (booksMeta) => {
+  const canvas = document.getElementById("scatterCanvas");
+  if (!canvas) return;
+  if (_scatterAnimFrame) { cancelAnimationFrame(_scatterAnimFrame); _scatterAnimFrame = null; }
+
+  const valid = booksMeta.filter((b) => b.pageCount > 0 && b.userRating > 0);
+  if (valid.length === 0) {
+    canvas.parentElement.innerHTML = '<p class="section-empty">Not enough data for scatter plot.</p>';
+    return;
+  }
+
+  const dpr = window.devicePixelRatio || 1;
+  const W = 700, H = 400;
+  const pad = { top: 20, right: 20, bottom: 44, left: 50 };
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  const ctx = canvas.getContext("2d");
+
+  const maxPages = Math.min(Math.max(...valid.map((b) => b.pageCount)), 1500);
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+
+  const genreMap = new Map();
+  let gIdx = 0;
+  valid.forEach((b) => {
+    const g = (b.genres && b.genres[0]) || "Unknown";
+    if (!genreMap.has(g)) genreMap.set(g, gIdx++);
+  });
+
+  const dots = valid.map((b) => {
+    const g = (b.genres && b.genres[0]) || "Unknown";
+    const ci = genreMap.get(g) || 0;
+    const pages = Math.min(b.pageCount, maxPages);
+    return {
+      baseX: pad.left + (pages / maxPages) * plotW,
+      baseY: pad.top + plotH - (b.userRating / 5) * plotH,
+      ci,
+    };
+  });
+
+  let liftT = 0;
+  let liftDir = 0;
+
+  const drawFrame = () => {
+    const cc = getChartColors();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    for (let i = 0; i <= 5; i++) {
+      const y = pad.top + plotH - (i / 5) * plotH;
+      ctx.strokeStyle = cc.gridLine; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+      ctx.fillStyle = cc.axisLabel; ctx.font = "10px sans-serif"; ctx.textAlign = "right";
+      ctx.fillText(i, pad.left - 8, y + 3);
+    }
+    for (let p = 0; p <= maxPages; p += 200) {
+      const x = pad.left + (p / maxPages) * plotW;
+      ctx.strokeStyle = cc.gridLine;
+      ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, pad.top + plotH); ctx.stroke();
+      ctx.fillStyle = cc.axisLabel; ctx.textAlign = "center";
+      ctx.fillText(p, x, H - pad.bottom + 16);
+    }
+    ctx.fillStyle = cc.textDim; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("Pages", W / 2, H - 4);
+    ctx.save(); ctx.translate(12, pad.top + plotH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText("Rating", 0, 0); ctx.restore();
+
+    const lift = liftT * 6;
+    const scale = 1 + liftT * 0.4;
+    dots.forEach((d) => {
+      ctx.beginPath();
+      ctx.arc(d.baseX, d.baseY - lift, 5 * scale, 0, Math.PI * 2);
+      ctx.fillStyle = cc.dot[d.ci % cc.dot.length];
+      ctx.globalAlpha = 0.7 + liftT * 0.3;
+      ctx.fill();
+      if (liftT > 0.01) {
+        ctx.shadowColor = cc.dot[d.ci % cc.dot.length];
+        ctx.shadowBlur = 6 * liftT;
+        ctx.fill();
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+      }
+      ctx.globalAlpha = 1;
+    });
+
+    const legendGenres = Array.from(genreMap.entries()).slice(0, 8);
+    ctx.font = "10px sans-serif";
+    legendGenres.forEach(([name, idx], i) => {
+      const lx = pad.left + (i % 4) * 160;
+      const ly = pad.top + plotH + 28 + Math.floor(i / 4) * 14;
+      ctx.fillStyle = cc.dot[idx % cc.dot.length];
+      ctx.fillRect(lx, ly - 8, 8, 8);
+      ctx.fillStyle = cc.textDim; ctx.textAlign = "left";
+      ctx.fillText(name.length > 18 ? name.slice(0, 17) + "…" : name, lx + 12, ly);
+    });
+  };
+
+  const animate = () => {
+    liftT += liftDir * 0.06;
+    if (liftT >= 1) { liftT = 1; liftDir = 0; }
+    if (liftT <= 0) { liftT = 0; liftDir = 0; }
+    drawFrame();
+    if (liftDir !== 0) _scatterAnimFrame = requestAnimationFrame(animate);
+  };
+
+  drawFrame();
+
+  canvas.onmouseenter = () => { liftDir = 1; if (_scatterAnimFrame) cancelAnimationFrame(_scatterAnimFrame); _scatterAnimFrame = requestAnimationFrame(animate); };
+  canvas.onmouseleave = () => { liftDir = -1; if (_scatterAnimFrame) cancelAnimationFrame(_scatterAnimFrame); _scatterAnimFrame = requestAnimationFrame(animate); };
+};
+
+/* ── Genre Radar / Spider chart (expand from center on hover) ── */
+let _radarAnimFrame = null;
+const renderRadarChart = (booksMeta) => {
+  const canvas = document.getElementById("radarCanvas");
+  if (!canvas) return;
+  if (_radarAnimFrame) { cancelAnimationFrame(_radarAnimFrame); _radarAnimFrame = null; }
+
+  const genreStats = new Map();
+  booksMeta.forEach((b) => {
+    if (!b.genres || b.genres.length === 0) return;
+    const g = b.genres[0];
+    if (!genreStats.has(g)) genreStats.set(g, { count: 0, ratingSum: 0, ratingN: 0, pageSum: 0, pageN: 0 });
+    const s = genreStats.get(g);
+    s.count++;
+    if (b.userRating > 0) { s.ratingSum += b.userRating; s.ratingN++; }
+    if (b.pageCount > 0) { s.pageSum += b.pageCount; s.pageN++; }
+  });
+
+  const topGenres = Array.from(genreStats.entries())
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 6);
+
+  if (topGenres.length < 3) {
+    canvas.parentElement.innerHTML = '<p class="section-empty">Not enough genre data for radar chart.</p>';
+    return;
+  }
+
+  const dpr = window.devicePixelRatio || 1;
+  const W = 480, H = 480;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  const ctx = canvas.getContext("2d");
+
+  const cxC = W / 2, cyC = H / 2;
+  const R = Math.min(W, H) * 0.36;
+  const n = topGenres.length;
+  const angleStep = (Math.PI * 2) / n;
+  const startAngle = -Math.PI / 2;
+  const maxCount = Math.max(...topGenres.map(([, s]) => s.count));
+
+  const dataVals = topGenres.map(([, stats]) => stats.count / maxCount);
+
+  let expandT = 1;
+
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+  const drawFrame = () => {
+    const cc = getChartColors();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    for (let ring = 1; ring <= 4; ring++) {
+      const r = (ring / 4) * R;
+      ctx.beginPath();
+      for (let i = 0; i <= n; i++) {
+        const a = startAngle + i * angleStep;
+        const x = cxC + r * Math.cos(a);
+        const y = cyC + r * Math.sin(a);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = cc.gridLine; ctx.lineWidth = 1; ctx.stroke();
+    }
+
+    topGenres.forEach(([name], i) => {
+      const a = startAngle + i * angleStep;
+      const x1 = cxC + R * Math.cos(a);
+      const y1 = cyC + R * Math.sin(a);
+      ctx.beginPath(); ctx.moveTo(cxC, cyC); ctx.lineTo(x1, y1); ctx.strokeStyle = cc.gridLine; ctx.stroke();
+      const lx = cxC + (R + 18) * Math.cos(a);
+      const ly = cyC + (R + 18) * Math.sin(a);
+      ctx.fillStyle = cc.text; ctx.font = "11px sans-serif";
+      ctx.textAlign = Math.abs(a) < 0.1 || Math.abs(a + Math.PI) < 0.1 ? "center" : a > -Math.PI / 2 && a < Math.PI / 2 ? "left" : "right";
+      ctx.textBaseline = "middle";
+      ctx.fillText(name.length > 14 ? name.slice(0, 13) + "…" : name, lx, ly);
+    });
+
+    const ease = easeOutCubic(expandT);
+
+    ctx.beginPath();
+    dataVals.forEach((val, i) => {
+      const scaledVal = val * ease;
+      const a = startAngle + i * angleStep;
+      const x = cxC + scaledVal * R * Math.cos(a);
+      const y = cyC + scaledVal * R * Math.sin(a);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+    ctx.fillStyle = cc.radarFill; ctx.fill();
+    ctx.strokeStyle = cc.radarStroke; ctx.lineWidth = 2; ctx.stroke();
+
+    dataVals.forEach((val, i) => {
+      const scaledVal = val * ease;
+      const a = startAngle + i * angleStep;
+      const x = cxC + scaledVal * R * Math.cos(a);
+      const y = cyC + scaledVal * R * Math.sin(a);
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = cc.radarDot; ctx.fill();
+    });
+  };
+
+  let expanding = false;
+
+  const animate = () => {
+    expandT += 0.012;
+    if (expandT >= 1) { expandT = 1; expanding = false; }
+    drawFrame();
+    if (expanding) _radarAnimFrame = requestAnimationFrame(animate);
+  };
+
+  drawFrame();
+
+  canvas.onmouseenter = () => { expandT = 0; expanding = true; if (_radarAnimFrame) cancelAnimationFrame(_radarAnimFrame); drawFrame(); _radarAnimFrame = requestAnimationFrame(animate); };
+  canvas.onmouseleave = () => { expanding = false; expandT = 1; if (_radarAnimFrame) cancelAnimationFrame(_radarAnimFrame); drawFrame(); };
+};
+
 const renderMetadataSources = (booksMeta) => {
   if (!metadataSourcesWrap) return;
   if (!booksMeta || booksMeta.length === 0) {
@@ -2497,9 +2862,17 @@ csvInput.addEventListener("change", (event) => {
   });
 });
 
+let _justDropped = false;
 dropzone.addEventListener("drop", (event) => {
   const [file] = event.dataTransfer?.files || [];
+  _justDropped = true;
+  setTimeout(() => { _justDropped = false; }, 400);
   handleFile(file);
+});
+
+dropzone.addEventListener("click", () => {
+  if (_justDropped) return;
+  csvInput.click();
 });
 
 changeFileButton.addEventListener("click", () => {
@@ -2576,6 +2949,9 @@ confirmUploadButton.addEventListener("click", async () => {
       setAuthorsTab(currentAuthorsMode);
       setCollectionsTab(currentCollectionsMode);
       renderMostRead(metadata.booksMeta);
+      renderReadingPace(metadata.booksMeta);
+      renderScatterPlot(metadata.booksMeta);
+      renderRadarChart(metadata.booksMeta);
       renderMetadataSources(metadata.booksMeta);
     } catch {
       if (loadingWrap) loadingWrap.style.display = "none";
@@ -2816,6 +3192,18 @@ if (authorPhotoOverlay) {
   });
 }
 
+/* ── Re-render all charts on theme change ─────────── */
+function refreshChartsForTheme() {
+  if (typeof drawHeroBars === "function") drawHeroBars();
+  if (!latestBooksMeta || latestBooksMeta.length === 0) return;
+  setYearTab(currentYearMode);
+  setTaxonomyTab(currentTaxonomyMode);
+  setThemesTab(currentThemesMode);
+  renderReadingPace(latestBooksMeta);
+  renderScatterPlot(latestBooksMeta);
+  renderRadarChart(latestBooksMeta);
+}
+
 /* ── Theme toggle ──────────────────────────────────── */
 (function initTheme() {
   const THEME_KEY = "statreads_theme";
@@ -2824,7 +3212,9 @@ if (authorPhotoOverlay) {
 
   const apply = (theme) => {
     document.documentElement.setAttribute("data-theme", theme);
-    if (btn) btn.innerHTML = theme === "dark" ? "\u263E" : "\u2600";
+    const moonSvg = '<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg>';
+    const sunSvg = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="12" y1="21" x2="12" y2="23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="1" y1="12" x2="3" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="21" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    if (btn) btn.innerHTML = theme === "dark" ? moonSvg : sunSvg;
   };
 
   const saved = localStorage.getItem(THEME_KEY);
@@ -2839,77 +3229,91 @@ if (authorPhotoOverlay) {
       const current = document.documentElement.getAttribute("data-theme") || (prefersDark.matches ? "dark" : "light");
       const next = current === "dark" ? "light" : "dark";
       localStorage.setItem(THEME_KEY, next);
+      btn.classList.add("is-switching");
+      setTimeout(() => btn.classList.remove("is-switching"), 300);
       apply(next);
-      if (typeof drawHeroLines === "function") drawHeroLines();
+      refreshChartsForTheme();
     });
   }
 
   prefersDark.addEventListener("change", (e) => {
     if (!localStorage.getItem(THEME_KEY)) {
       apply(e.matches ? "dark" : "light");
-      if (typeof drawHeroLines === "function") drawHeroLines();
+      refreshChartsForTheme();
     }
   });
 })();
 
-/* ── Hero line graphs ─────────────────────────────── */
-const HERO_W = 260, HERO_H = 180;
-const heroLineSeeds = { left: [], right: [] };
+/* ── Hero wave graphs ─────────────────────────────── */
+const HERO_W = 300, HERO_H = 180;
 let heroAnimFrame = null;
-let heroHovered = false;
 let heroAnimT = 0;
+let heroAnimating = false;
 
-function seedLine(w, h) {
-  const baseY = h * 0.3 + Math.random() * h * 0.4;
-  const amp = 18 + Math.random() * 18;
-  const freq = 0.6 + Math.random() * 0.6;
-  const phase = Math.random() * Math.PI * 2;
-  return { baseY, amp, freq, phase };
-}
+const heroWaves = { left: [], right: [] };
 
-function initHeroLineSeeds() {
-  for (let i = 0; i < 3; i++) {
-    heroLineSeeds.left.push(seedLine(HERO_W, HERO_H));
-    heroLineSeeds.right.push(seedLine(HERO_W, HERO_H));
-  }
-}
-
-function getLineColors() {
+function getWaveStyles() {
   const isDark = document.documentElement.getAttribute("data-theme") !== "light";
   if (isDark) {
     return [
-      { stroke: "rgba(50,96,128,0.5)", width: 1.8 },
-      { stroke: "rgba(181,210,230,0.35)", width: 1.4 },
-      { stroke: "rgba(128,82,50,0.4)", width: 1.6 },
+      { stroke: "rgba(255,241,231,0.30)", fill: "rgba(255,241,231,0.04)", width: 1.8 },
+      { stroke: "rgba(255,241,231,0.22)", fill: "rgba(255,241,231,0.03)", width: 1.5 },
+      { stroke: "rgba(255,241,231,0.18)", fill: "rgba(255,241,231,0.025)",width: 1.5 },
+      { stroke: "rgba(255,241,231,0.14)", fill: "rgba(255,241,231,0.02)", width: 1.2 },
+      { stroke: "rgba(255,241,231,0.10)", fill: "rgba(255,241,231,0.015)",width: 1.0 },
     ];
   }
   return [
-    { stroke: "rgba(50,96,128,0.3)", width: 1.8 },
-    { stroke: "rgba(181,180,170,0.25)", width: 1.4 },
-    { stroke: "rgba(160,110,75,0.25)", width: 1.6 },
+    { stroke: "rgba(50,96,128,0.22)",  fill: "rgba(50,96,128,0.03)",  width: 1.8 },
+    { stroke: "rgba(128,82,50,0.18)",  fill: "rgba(128,82,50,0.025)", width: 1.5 },
+    { stroke: "rgba(50,96,128,0.15)",  fill: "rgba(50,96,128,0.02)",  width: 1.5 },
+    { stroke: "rgba(128,82,50,0.12)",  fill: "rgba(128,82,50,0.015)", width: 1.2 },
+    { stroke: "rgba(50,96,128,0.09)",  fill: "rgba(50,96,128,0.01)",  width: 1.0 },
   ];
 }
 
-function evalLine(seed, x, w, h, t) {
-  const norm = x / w;
-  const wave = Math.sin(norm * Math.PI * seed.freq * 2 + seed.phase + t * 0.8);
-  return seed.baseY + wave * seed.amp;
+function initHeroWaves() {
+  ["left", "right"].forEach((side) => {
+    heroWaves[side] = [];
+    for (let l = 0; l < 5; l++) {
+      const centerY = HERO_H * (0.25 + l * 0.12) + (Math.random() - 0.5) * 20;
+      heroWaves[side].push({
+        centerY,
+        amp: 12 + Math.random() * 22,
+        freq: 1.2 + Math.random() * 1.0,
+        phase: Math.random() * Math.PI * 2,
+        drift: 0.4 + Math.random() * 0.8,
+      });
+    }
+  });
 }
 
-function drawSmoothLine(ctx, seed, w, h, t) {
-  const steps = 80;
-  ctx.beginPath();
+function buildWavePath(ctx, wave, t) {
+  const steps = 60;
+  const pts = [];
   for (let i = 0; i <= steps; i++) {
-    const x = (i / steps) * w;
-    const y = Math.max(6, Math.min(h - 6, evalLine(seed, x, w, h, t)));
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    const norm = i / steps;
+    const x = norm * HERO_W;
+    const animOff = heroAnimating ? Math.sin(t * wave.drift + norm * 3) * 6 : 0;
+    const y = wave.centerY
+      + Math.sin(norm * Math.PI * wave.freq + wave.phase + t * wave.drift) * wave.amp
+      + animOff;
+    pts.push({ x, y: Math.max(4, Math.min(HERO_H - 4, y)) });
   }
-  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) {
+    const prev = pts[i - 1];
+    const cur = pts[i];
+    const cpx = (prev.x + cur.x) / 2;
+    ctx.bezierCurveTo(cpx, prev.y, cpx, cur.y, cur.x, cur.y);
+  }
+  return pts;
 }
 
-function drawHeroLines() {
-  const colors = getLineColors();
+function drawHeroBars() {
+  const styles = getWaveStyles();
+
   ["Left", "Right"].forEach((side) => {
     const canvas = document.getElementById("heroLine" + side);
     if (!canvas) return;
@@ -2922,43 +3326,83 @@ function drawHeroLines() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, HERO_W, HERO_H);
 
-    const seeds = heroLineSeeds[side.toLowerCase()];
-    seeds.forEach((seed, i) => {
-      const c = colors[i % colors.length];
-      ctx.strokeStyle = c.stroke;
-      ctx.lineWidth = c.width;
+    const waves = heroWaves[side.toLowerCase()];
+    waves.forEach((wave, i) => {
+      const s = styles[i % styles.length];
+
+      buildWavePath(ctx, wave, heroAnimT);
+
+      ctx.strokeStyle = s.stroke;
+      ctx.lineWidth = s.width;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      drawSmoothLine(ctx, seed, HERO_W, HERO_H, heroHovered ? heroAnimT : 0);
+      ctx.stroke();
+
+      ctx.lineTo(HERO_W, HERO_H);
+      ctx.lineTo(0, HERO_H);
+      ctx.closePath();
+      ctx.fillStyle = s.fill;
+      ctx.fill();
     });
+
+    const outerFade = HERO_W * 0.3;
+    const innerFade = HERO_W * 0.2;
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-out";
+    if (side === "Left") {
+      const gOuter = ctx.createLinearGradient(0, 0, outerFade, 0);
+      gOuter.addColorStop(0, "rgba(0,0,0,1)");
+      gOuter.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = gOuter;
+      ctx.fillRect(0, 0, outerFade, HERO_H);
+
+      const gInner = ctx.createLinearGradient(HERO_W - innerFade, 0, HERO_W, 0);
+      gInner.addColorStop(0, "rgba(0,0,0,0)");
+      gInner.addColorStop(1, "rgba(0,0,0,1)");
+      ctx.fillStyle = gInner;
+      ctx.fillRect(HERO_W - innerFade, 0, innerFade, HERO_H);
+    } else {
+      const gOuter = ctx.createLinearGradient(HERO_W - outerFade, 0, HERO_W, 0);
+      gOuter.addColorStop(0, "rgba(0,0,0,0)");
+      gOuter.addColorStop(1, "rgba(0,0,0,1)");
+      ctx.fillStyle = gOuter;
+      ctx.fillRect(HERO_W - outerFade, 0, outerFade, HERO_H);
+
+      const gInner = ctx.createLinearGradient(0, 0, innerFade, 0);
+      gInner.addColorStop(0, "rgba(0,0,0,1)");
+      gInner.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = gInner;
+      ctx.fillRect(0, 0, innerFade, HERO_H);
+    }
+    ctx.restore();
   });
 }
 
 function heroAnimLoop() {
   heroAnimT += 0.02;
-  drawHeroLines();
-  if (heroHovered) {
+  drawHeroBars();
+  if (heroAnimating) {
     heroAnimFrame = requestAnimationFrame(heroAnimLoop);
   }
 }
 
-initHeroLineSeeds();
-drawHeroLines();
+initHeroWaves();
+drawHeroBars();
 
 const heroEl = document.querySelector(".dashboard-hero");
 if (heroEl) {
   heroEl.addEventListener("mouseenter", () => {
-    heroHovered = true;
+    heroAnimating = true;
     if (!heroAnimFrame) heroAnimLoop();
   });
   heroEl.addEventListener("mouseleave", () => {
-    heroHovered = false;
+    heroAnimating = false;
     if (heroAnimFrame) {
       cancelAnimationFrame(heroAnimFrame);
       heroAnimFrame = null;
     }
     heroAnimT = 0;
-    drawHeroLines();
+    drawHeroBars();
   });
 }
 
