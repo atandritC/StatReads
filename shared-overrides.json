@@ -2,5 +2,17 @@
   "I Have No Mouth & I Must Scream": {
     "coverUrl": "https://upload.wikimedia.org/wikipedia/en/4/47/IHaveNoMouth.jpg"
   },
+    "The Immortals of Meluha": {
+    "seriesName": "Shiva Trilogy",
+    "seriesTotalBooks": 3
+  },
+  "The Secret of the Nagas": {
+    "seriesName": "Shiva Trilogy",
+    "seriesTotalBooks": 3
+  },
+  "The Oath of the Vayuputras": {
+    "seriesName": "Shiva Trilogy",
+    "seriesTotalBooks": 3
+  }
   "_authors": {}
 }
