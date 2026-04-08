@@ -1,7 +1,7 @@
 # StatReads
 
-**Dynamic Book Statistics Dashboard**  
-A client-side web app that transforms your StoryGraph or Goodreads CSV export into a rich, visual dashboard — surfacing reading patterns, genre breakdowns, decade trends, thematic insights, and series progress, all powered by live metadata from public book APIs.
+**A Life in Books**  
+A client-side web app that transforms your StoryGraph or Goodreads CSV export into a rich, visual dashboard — surfacing reading patterns, genre breakdowns, decade trends, thematic insights, series progress, and geographic footprint, all powered by live metadata from public book APIs.
 
 [![HTML5](https://img.shields.io/badge/HTML5-E34F26.svg?logo=html5&logoColor=white)](https://developer.mozilla.org/en-US/docs/Web/HTML)
 [![CSS3](https://img.shields.io/badge/CSS3-1572B6.svg?logo=css3&logoColor=white)](https://developer.mozilla.org/en-US/docs/Web/CSS)
@@ -9,49 +9,68 @@ A client-side web app that transforms your StoryGraph or Goodreads CSV export in
 [![Open Library](https://img.shields.io/badge/Open%20Library-API-blue.svg)](https://openlibrary.org/developers/api)
 [![Google Books](https://img.shields.io/badge/Google%20Books-API-4285F4.svg?logo=google&logoColor=white)](https://developers.google.com/books)
 
-## 🛠 Tech Stack
+## Tech Stack
 
 **Frontend** — Pure client-side, no build step required
-- HTML5 + CSS3 (Flexbox, Grid, custom properties)
+- HTML5 + CSS3 (Flexbox, Grid, custom properties, dark/light theming)
 - Vanilla JavaScript (ES6+, async/await)
+- HTML Canvas API for custom charts and animations
 - No frameworks or bundlers — opens directly in a browser
 
 **External APIs**
-- [Open Library API](https://openlibrary.org/developers/api) — Original publication years, covers, subjects/themes
+- [Open Library API](https://openlibrary.org/developers/api) — Publication years, covers, subjects/themes
 - [Google Books API](https://developers.google.com/books) — Authors, covers, page counts, genres, series detection
-- [Wikidata API](https://www.wikidata.org/wiki/Wikidata:Data_access) — Author nationality (country of citizenship)
+- [Wikidata API](https://www.wikidata.org/wiki/Wikidata:Data_access) — Author photos and nationality (country of citizenship)
+- [Google Charts](https://developers.google.com/chart) — Interactive world map (GeoChart)
 
 **Storage**
-- `localStorage` for persisting manual metadata overrides across sessions
+- `localStorage` for persisting manual metadata overrides, theme preference, and pending community submissions
 
-## ✨ Key Features
+## Key Features
 
-- **CSV Upload** — Import your StoryGraph or Goodreads export; auto-detects format
-- **Stats at a Glance** — Books read, unique authors, countries, pages logged, and average user rating
-- **By Year Chart** — Interactive bar chart of books by count or average rating per publication year
-- **Highest Rated Decades** — Top decades ranked by average rating, with book covers sorted by release year
-- **Genres & Countries** — Bar charts with "Most Read" / "Highest Rated" toggle; country derived from author nationality via Wikidata
-- **Themes** — Compact thematic breakdown extracted from Open Library subjects (top 2 per book)
-- **Collections** — Detects book series (via API title/subtitle patterns and common-prefix matching), shows "Complete" and "Almost Complete" tabs with cover grids and read progress
-- **Metadata Sources** — Transparency table showing where each field (cover, year, genres, country) was sourced from (Open Library, Google, Wikidata, or Manual)
-- **Override Manager** — In-app editor to manually correct or add metadata for any book, with JSON export/import; overrides persist in localStorage
+### Dashboard Overview
+- **Stats at a Glance** — Books read, unique authors, countries represented, total pages, and average rating
+- **Dark / Light Theme** — Toggle between modes; defaults to OS preference, persists across sessions
+- **Animated Hero** — Decorative line-graph waves with theme-aware colours
 
-## 📸 Screenshots
+### Charts & Visualisations
+- **By Year** — Interactive bar chart toggling between book count and average rating per publication year, with hover tooltips
+- **Highest Rated Decades** — Top decades ranked by average user rating, with cover art sorted by release year
+- **Highest Read Decades** — Top decades ranked by number of books read, with cover art and book count
+- **Genres & Countries** — Bar charts with "Most Read" / "Highest Rated" tabs; countries derived from author nationality via Wikidata
+- **Themes** — Side-by-side 3D pie charts (Most Read / Highest Rated) extracted from subject tags, with hover-lift animation
+- **Reading Pace** — Pages-per-day line chart computed monthly, with progressive-draw animation on hover
+- **Genre vs Rating** — Violin plot showing rating distributions per genre with kernel density estimation, median lines, and mean dots
+- **Genre Profile** — Radar/spider chart for top genres across count, average rating, and average page count, with expand-from-centre hover animation
+- **World Map** — Choropleth map of book origins by country; click a country to see a scrollable popup of books read from that region
 
-![Landing Page](screenshots/landing.png)
-![Dashboard Stats](screenshots/dashboard.png)
-![Genres & Countries](screenshots/genres-countries.png)
-![Collections](screenshots/collections.png)
+### Collections & Series
+- **Collections** — Detects book series via API metadata, subtitle patterns, and common-prefix matching; displays "Complete" and "Almost Complete" tabs with stacked cover art that fans out on hover; click a stack to see the full book list in a popup
+- **Manual Series Support** — Declare series name and total book count in the override form; drives Complete/Almost Complete logic for series not detected by APIs
 
-## 🏗 Architecture
+### Authors
+- **Authors Grid** — Author photos sourced from Wikidata, sorted by most-read (primary) and alphabetical (secondary), with "Most Read" / "Highest Rated" tabs and progressive "Show More" loading
+
+### Most Read
+- **Most Read** — Grid of all books sorted by re-read count and publication year, displayed as cover art with a read-count badge
+
+### Metadata & Overrides
+- **Metadata Sources** — Transparency table showing where each field was sourced from (Open Library, Google Books, Wikidata, or manual override), sorted alphabetically with A–Z jump navigation
+- **Override Manager** — In-app editor to manually correct or add metadata for any book or author; overrides persist in localStorage and always take priority over API data
+- **Community Contributions** — Batch-submit overrides as a GitHub issue so corrections benefit all users; edit or delete pending submissions before finalising
+
+## Architecture
 
 - **Multi-view SPA** — Three views (Upload → Confirm → Dashboard) managed via CSS class toggling, no routing library needed
 - **Layered API Fetching** — Open Library search → Open Library work/editions → Google Books → broad Google fallback, with each layer filling gaps left by the previous
-- **Author-level Enrichment** — Wikidata provides canonical nationality; country signals are shared across all books by the same author
-- **Series Detection** — Two strategies: subtitle/title pattern matching (e.g., "Shiva Trilogy Book 1") and common-prefix grouping (e.g., "Harry Potter and the…"); enrichment uses book-number extraction for accurate totals
-- **Manual Override Precedence** — User overrides always take priority over API data; stored in localStorage and applied after all API enrichment
+- **Batch Processing** — API requests are batched with concurrency limits to avoid rate-limiting while maximising throughput
+- **Author-level Enrichment** — Wikidata provides canonical nationality and photo; country and photo data are shared across all books by the same author
+- **Series Detection** — Three strategies: subtitle/title pattern matching, common-prefix grouping, and manual override declarations; within each series, books are sorted by published year → series number → override insertion order
+- **Manual Override Precedence** — User overrides always take priority over API data and shared community overrides; stored in localStorage and applied after all API enrichment
+- **Theme System** — CSS custom properties drive all colour values; theme toggle updates `data-theme` attribute on `<html>`, and all canvas charts re-render on theme change via `refreshChartsForTheme()`
+- **Caching** — Metadata, author photos, and map data are cached in localStorage and in-memory maps to minimise repeat API calls
 
-## ⚙️ How to Run Locally
+## How to Run Locally
 
 No server, build step, or dependencies required.
 
@@ -73,21 +92,25 @@ xdg-open index.html
 
 Then upload a CSV export from [StoryGraph](https://www.thestorygraph.com/) or [Goodreads](https://www.goodreads.com/).
 
-## 🧠 Challenges Faced & Solutions
+## Challenges Faced & Solutions
 
 | Challenge | Solution |
 |---|---|
-| Google Books stores series info in `subtitle`, not `title` | Built `detectSeriesFromTitle` to check both fields with 6 regex patterns covering formats like "Book N of the Series", "Series #N", subtitles, etc. |
-| Harry Potter books have no series indicator in API metadata | Added common-prefix detection — books by the same author sharing a title prefix are automatically grouped as a series |
-| Open Library returns reprint years instead of original publication dates | Implemented a scoring system across multiple OL endpoints (search, works, editions) prioritizing `first_publish_year` |
-| Google Books series enrichment returns noisy results (translations, boxsets, graphic novels) | Used book-number extraction from titles/subtitles instead of title-dedup; skip patterns filter out boxsets, omnibus editions, and companions |
-| Author nationality unreliable from book metadata alone | Integrated Wikidata as primary source for author citizenship (P27), with Open Library birth-place as fallback |
-| CORS and mixed-content issues with cover image URLs | `toDirectImageUrl` normalizer rewrites HTTP → HTTPS and handles provider-specific URL patterns |
+| Series info often stored in API subtitle fields rather than title | Built pattern matcher that checks both title and subtitle with multiple regex patterns covering formats like "Book N of Series", "Series #N", numbered subtitles, etc. |
+| Some popular series have no series indicator in API metadata at all | Added common-prefix detection — books by the same author sharing a long title prefix are automatically grouped |
+| APIs sometimes return reprint years instead of original publication dates | Implemented a scoring system across multiple endpoints prioritising earliest publication year |
+| Series enrichment returns noisy results (translations, boxsets, graphic novels) | Used book-number extraction from titles/subtitles; skip-patterns filter out boxsets, omnibus editions, and companions |
+| Author nationality unreliable from book metadata alone | Integrated Wikidata as primary source for author citizenship, with birth-place as fallback |
+| Cover images inconsistent across sections | Three-tier fallback (primary URL → Google Books ISBN lookup → text placeholder) applied uniformly across all rendering paths |
+| CORS and mixed-content issues with cover image URLs | URL normaliser rewrites HTTP → HTTPS and handles provider-specific URL patterns |
+| Graph colours not visible across both themes | Separate colour palettes for dark and light modes in all canvas charts; charts fully re-render on theme toggle |
 
-## 📈 What I Learned
+## What I Learned
 
 - Designing resilient multi-source API pipelines with layered fallbacks
-- Normalizing and deduplicating messy real-world data from multiple providers
+- Normalising and deduplicating messy real-world data from multiple providers
 - Building a responsive, interactive dashboard with zero dependencies
-- Client-side state management using localStorage for user overrides
+- Client-side state management using localStorage for user overrides and caching
+- Custom canvas-based chart rendering with animations (KDE violin plots, radar charts, area charts)
+- Implementing dark/light theming with CSS custom properties and canvas re-rendering
 - Regex-based pattern matching for structured metadata extraction from unstructured text

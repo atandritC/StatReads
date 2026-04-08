@@ -13,6 +13,24 @@
   "The Oath of the Vayuputras": {
     "seriesName": "Shiva Trilogy",
     "seriesTotalBooks": 3
-  }
+  },
+  "The Lost Hero": {
+    "seriesName": "The Heroes of Olympus",
+    "seriesTotalBooks": 5,
+    "coverUrl": "https://upload.wikimedia.org/wikipedia/en/9/9d/The_Lost_Hero_210.jpg"
+  },
+  "The Son of Neptune": {
+    "seriesName": "The Heroes of Olympus",
+    "seriesTotalBooks": 5,
+    "coverUrl": "https://upload.wikimedia.org/wikipedia/en/d/d1/Heroes_of_Olympus_-_The_Son_of_Neptune.png"
+  },
+  "The Mark of Athena": {
+    "seriesName": "The Heroes of Olympus",
+    "seriesTotalBooks": 5,
+    "coverUrl": "https://upload.wikimedia.org/wikipedia/en/0/0e/The_Mark_of_Athena_cover_art.jpg"
+  },
+  "Harry Potter and the Order of the Phoenix": {
+    "coverUrl": "https://upload.wikimedia.org/wikipedia/en/7/70/Harry_Potter_and_the_Order_of_the_Phoenix.jpg"
+  },
   "_authors": {}
 }

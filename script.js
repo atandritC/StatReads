@@ -21,6 +21,7 @@ const yearChart = document.getElementById("yearChart");
 const yearMin = document.getElementById("yearMin");
 const yearMax = document.getElementById("yearMax");
 const decadesList = document.getElementById("decadesList");
+const decadesReadList = document.getElementById("decadesReadList");
 const booksTab = document.getElementById("booksTab");
 const ratingsTab = document.getElementById("ratingsTab");
 const taxonomyMostReadTab = document.getElementById("taxonomyMostReadTab");
@@ -49,6 +50,7 @@ const overrideYear = document.getElementById("overrideYear");
 const overrideCountries = document.getElementById("overrideCountries");
 const overrideGenres = document.getElementById("overrideGenres");
 const overrideSeriesName = document.getElementById("overrideSeriesName");
+const overrideSeriesTotalBooks = document.getElementById("overrideSeriesTotalBooks");
 const overrideCoverUrl = document.getElementById("overrideCoverUrl");
 const saveOverrideBtn = document.getElementById("saveOverrideBtn");
 const submitOverrideBtn = document.getElementById("submitOverrideBtn");
@@ -387,6 +389,10 @@ const sanitizeOverride = (entry) => {
     if (isAllowedCoverUrl(entry.coverUrl)) clean.coverUrl = entry.coverUrl;
   }
   if (entry.seriesName) clean.seriesName = sanitizeText(entry.seriesName, 120);
+  if (entry.seriesTotalBooks) {
+    const tb = Number(entry.seriesTotalBooks);
+    if (Number.isFinite(tb) && tb >= 2 && tb <= 200) clean.seriesTotalBooks = tb;
+  }
   if (Array.isArray(entry.countries)) {
     clean.countries = entry.countries.map((c) => sanitizeText(c, 80)).filter(Boolean);
   }
@@ -408,7 +414,7 @@ const sanitizeOverridesMap = (raw) => {
   return out;
 };
 
-const keyForBook = (book) => book.isbn || book.title;
+const keyForBook = (book) => book.title || book.isbn;
 
 const getOverrideForBook = (book) => {
   const local = runtimeOverrides[book.title] || (book.isbn && runtimeOverrides[book.isbn]) || null;
@@ -1425,6 +1431,9 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
       book.seriesName = override.seriesName;
       book._manualSeries = true;
     }
+    if (override.seriesTotalBooks && Number(override.seriesTotalBooks) >= 2) {
+      book._seriesTotalBooks = Number(override.seriesTotalBooks);
+    }
   });
 
   // Country is singular in dashboard (author nationality).
@@ -1518,6 +1527,9 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
       });
     }
     const entry = seriesMap.get(key);
+    if (book.seriesName.length > entry.name.length || (book.seriesName.length === entry.name.length && book.seriesName < entry.name)) {
+      entry.name = book.seriesName;
+    }
     entry.userBooks.push(book);
     if (!book._prefixSeries) entry.prefixDetected = false;
   });
@@ -1551,16 +1563,26 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
     try {
       // Prefix-detected series (e.g. Harry Potter): use user's own books directly.
       if (info.prefixDetected) {
-        const covers = info.userBooks.map((book) => ({
+        const sorted = [...info.userBooks].sort((a, b) => {
+          const ya = a.publishedYear || 9999;
+          const yb = b.publishedYear || 9999;
+          if (ya !== yb) return ya - yb;
+          const na = a.seriesNumber || 9999;
+          const nb = b.seriesNumber || 9999;
+          return na - nb;
+        });
+        const covers = sorted.map((book) => ({
           url: book.coverUrl || "",
+          isbn: book.isbn || "",
           read: true,
         }));
-        if (info.userBooks.length < 3) return;
+        if (sorted.length < 3) return;
         seriesData.push({
           name: info.name,
-          totalBooks: info.userBooks.length,
-          readCount: info.userBooks.length,
+          totalBooks: sorted.length,
+          readCount: sorted.length,
           covers,
+          books: sorted,
         });
         console.log(`[StatReads] Prefix series "${info.name}": ${info.userBooks.length} user books`);
         return;
@@ -1627,7 +1649,7 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
         if (matchedBook && !matchedBook.coverUrl && coverUrl) {
           matchedBook.coverUrl = coverUrl;
         }
-        covers.push({ url: coverUrl, read: isRead });
+        covers.push({ url: coverUrl, isbn: matchedBook?.isbn || "", read: isRead });
       }
 
       seriesData.push({
@@ -1635,6 +1657,7 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
         totalBooks,
         readCount,
         covers,
+        books: info.userBooks,
       });
     } catch (err) {
       console.warn(`[StatReads] Series enrichment failed for "${info.name}":`, err);
@@ -2138,10 +2161,66 @@ if (authorsShowMore) authorsShowMore.addEventListener("click", () => {
   renderAuthorsSlice();
 });
 
+const showCollectionPopup = (series) => {
+  const overlay = document.getElementById("collectionPopupOverlay");
+  if (!overlay) return;
+  const titleEl = document.getElementById("collectionPopupTitle");
+  const listEl = document.getElementById("collectionPopupList");
+  if (titleEl) titleEl.textContent = `${series.name} — ${series.readCount} of ${series.totalBooks} book${series.totalBooks !== 1 ? "s" : ""}`;
+  if (listEl) {
+    listEl.scrollTop = 0;
+    listEl.innerHTML = (series.books || []).map((b) => {
+      const gFb = b.isbn ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(b.isbn)}&printsec=frontcover&img=1&zoom=1` : "";
+      let cover;
+      if (b.coverUrl) {
+        const oe = gFb
+          ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');}" data-fallback="${gFb}"`
+          : `onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');"`;
+        cover = `<img src="${b.coverUrl}" alt="" class="wm-popup-cover" loading="lazy" referrerpolicy="no-referrer" ${oe} /><div class="wm-popup-cover wm-popup-cover-empty" style="display:none"></div>`;
+      } else if (gFb) {
+        cover = `<img src="${gFb}" alt="" class="wm-popup-cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');" /><div class="wm-popup-cover wm-popup-cover-empty" style="display:none"></div>`;
+      } else {
+        cover = `<div class="wm-popup-cover wm-popup-cover-empty"></div>`;
+      }
+      const author = (b.authors && b.authors[0]) || b.authorHint || "";
+      const year = b.publishedYear || "";
+      const rating = b.userRating > 0 ? `${"★".repeat(Math.round(b.userRating))}${"☆".repeat(5 - Math.round(b.userRating))}` : "";
+      return `<div class="wm-popup-book">${cover}<div class="wm-popup-info"><div class="wm-popup-book-title">${escapeHtml(b.title || "Untitled")}</div><div class="wm-popup-book-author">${escapeHtml(author)}${year ? ` (${year})` : ""}</div>${rating ? `<div class="wm-popup-book-rating">${rating}</div>` : ""}</div></div>`;
+    }).join("");
+  }
+  overlay.style.display = "";
+};
+
+(() => {
+  const overlay = document.getElementById("collectionPopupOverlay");
+  const closeBtn = document.getElementById("collectionPopupClose");
+  if (overlay) overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.style.display = "none"; });
+  if (closeBtn) closeBtn.addEventListener("click", () => { if (overlay) overlay.style.display = "none"; });
+})();
+
+const buildCoverImg = (c) => {
+  const opacity = c.read ? "1" : "0.35";
+  const src = c.url || "";
+  const gFb = c.isbn ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(c.isbn)}&printsec=frontcover&img=1&zoom=1` : "";
+  if (src) {
+    const oe = gFb
+      ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');}" data-fallback="${gFb}"`
+      : `onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');"`;
+    return `<img src="${escapeHtml(src)}" alt="" class="collection-cover" style="opacity:${opacity}" loading="lazy" referrerpolicy="no-referrer" ${oe} /><div class="collection-cover collection-cover-placeholder" style="opacity:${opacity};display:none"></div>`;
+  }
+  if (gFb) {
+    return `<img src="${gFb}" alt="" class="collection-cover" style="opacity:${opacity}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');" /><div class="collection-cover collection-cover-placeholder" style="opacity:${opacity};display:none"></div>`;
+  }
+  return `<div class="collection-cover collection-cover-placeholder" style="opacity:${opacity}"></div>`;
+};
+
+let _collectionSeriesMap = [];
+
 const renderCollections = (seriesData, mode = "complete") => {
   if (!collectionsGrid) return;
   if (!seriesData || seriesData.length === 0) {
     collectionsGrid.innerHTML = '<p class="section-empty">No series detected.</p>';
+    _collectionSeriesMap = [];
     return;
   }
 
@@ -2153,27 +2232,31 @@ const renderCollections = (seriesData, mode = "complete") => {
   if (filtered.length === 0) {
     const msg = mode === "complete" ? "No completed series yet." : "No almost-complete series.";
     collectionsGrid.innerHTML = `<p class="section-empty">${msg}</p>`;
+    _collectionSeriesMap = [];
     return;
   }
 
+  _collectionSeriesMap = filtered;
+
   collectionsGrid.innerHTML = filtered
-    .map((series) => {
-      const coversHtml = series.covers
-        .slice(0, 6)
-        .map((c) => {
-          const opacity = c.read ? "1" : "0.35";
-          const src = c.url || "";
-          return src
-            ? `<img src="${escapeHtml(src)}" alt="" class="collection-cover" style="opacity:${opacity}" loading="lazy" />`
-            : `<div class="collection-cover collection-cover-placeholder" style="opacity:${opacity}"></div>`;
-        })
-        .join("");
+    .map((series, si) => {
+      const covers = series.covers;
+      const count = covers.length;
+      const stackHtml = covers.map((c, i) => {
+        const offset = i * 6;
+        const zIndex = count - i;
+        const inner = buildCoverImg(c);
+        return `<div style="position:absolute;bottom:0;left:${offset}px;z-index:${zIndex};" class="collection-cover-slot" data-idx="${i}">${inner}</div>`;
+      }).join("");
+      const stackW = 54 + (count - 1) * 6 + 6;
       const countLabel = mode === "complete"
         ? `${series.readCount} read`
         : `${series.readCount} of ${series.totalBooks} read`;
       return `
-        <div class="collection-card">
-          <div class="collection-covers">${coversHtml}</div>
+        <div class="collection-card" data-series-idx="${si}">
+          <div class="collection-stack" style="width:${stackW}px;" title="Click to see all books">
+            ${stackHtml}
+          </div>
           <p class="collection-name">${escapeHtml(series.name)}</p>
           <p class="collection-count">${escapeHtml(countLabel)}</p>
         </div>
@@ -2181,6 +2264,42 @@ const renderCollections = (seriesData, mode = "complete") => {
     })
     .join("");
 };
+
+if (collectionsGrid) {
+  collectionsGrid.addEventListener("click", (e) => {
+    const card = e.target.closest(".collection-card");
+    if (!card) return;
+    const idx = Number(card.dataset.seriesIdx);
+    const series = _collectionSeriesMap[idx];
+    if (series) showCollectionPopup(series);
+  });
+
+  collectionsGrid.addEventListener("mouseenter", (e) => {
+    const stack = e.target.closest(".collection-stack");
+    if (!stack) return;
+    const slots = stack.querySelectorAll(".collection-cover-slot");
+    const expandGap = 28;
+    slots.forEach((slot) => {
+      const i = Number(slot.dataset.idx);
+      slot.style.left = (i * expandGap) + "px";
+      slot.style.transform = "translateY(-4px)";
+    });
+    stack.style.width = (54 + (slots.length - 1) * expandGap + 6) + "px";
+  }, true);
+
+  collectionsGrid.addEventListener("mouseleave", (e) => {
+    const stack = e.target.closest(".collection-stack");
+    if (!stack) return;
+    const slots = stack.querySelectorAll(".collection-cover-slot");
+    const collapseGap = 6;
+    slots.forEach((slot) => {
+      const i = Number(slot.dataset.idx);
+      slot.style.left = (i * collapseGap) + "px";
+      slot.style.transform = "";
+    });
+    stack.style.width = (54 + (slots.length - 1) * collapseGap + 6) + "px";
+  }, true);
+}
 
 const setCollectionsTab = (mode) => {
   currentCollectionsMode = mode;
@@ -2213,9 +2332,20 @@ const renderMostRead = (booksMeta) => {
     .slice(0, 36)
     .map((book) => {
       const safeTitle = escapeHtml(book.title);
-      const coverHtml = book.coverUrl
-        ? `<img src="${escapeHtml(book.coverUrl)}" alt="${safeTitle}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';" />`
-        : `<div class="cover-fallback">${safeTitle}</div>`;
+      const googleFallback = book.isbn
+        ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(book.isbn)}&printsec=frontcover&img=1&zoom=1`
+        : "";
+      let coverHtml;
+      if (book.coverUrl) {
+        const onerrorAttr = googleFallback
+          ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';}" data-fallback="${googleFallback}"`
+          : `onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';"`;
+        coverHtml = `<img src="${escapeHtml(book.coverUrl)}" alt="${safeTitle}" loading="lazy" referrerpolicy="no-referrer" ${onerrorAttr} />`;
+      } else if (googleFallback) {
+        coverHtml = `<img src="${googleFallback}" alt="${safeTitle}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';" />`;
+      } else {
+        coverHtml = `<div class="cover-fallback">${safeTitle}</div>`;
+      }
       const times = book.timesRead || 1;
       return `
         <div class="most-read-card">
@@ -2253,35 +2383,38 @@ const getChartColors = () => {
   };
 };
 
-/* ── Reading Pace chart (with line-redraw hover animation) ── */
+/* ── Reading Pace chart — Pages per Day per month ── */
 let _paceAnimFrame = null;
 const renderReadingPace = (booksMeta) => {
   const canvas = document.getElementById("readingPaceCanvas");
   if (!canvas) return;
   if (_paceAnimFrame) { cancelAnimationFrame(_paceAnimFrame); _paceAnimFrame = null; }
 
-  const booksWithDate = booksMeta.filter((b) => b.dateRead);
+  const booksWithDate = booksMeta.filter((b) => b.dateRead && b.pageCount > 0);
   if (booksWithDate.length === 0) {
-    canvas.parentElement.innerHTML = '<p class="section-empty">No date-read data available.</p>';
+    canvas.parentElement.innerHTML = '<p class="section-empty">No date-read / page data available.</p>';
     return;
   }
 
-  const monthly = new Map();
   const monthlyPages = new Map();
   booksWithDate.forEach((b) => {
     const d = new Date(b.dateRead);
     if (isNaN(d.getTime())) return;
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    monthly.set(key, (monthly.get(key) || 0) + 1);
     monthlyPages.set(key, (monthlyPages.get(key) || 0) + (b.pageCount || 0));
   });
 
-  if (monthly.size === 0) {
+  if (monthlyPages.size === 0) {
     canvas.parentElement.innerHTML = '<p class="section-empty">No valid date-read data.</p>';
     return;
   }
 
-  const keys = Array.from(monthly.keys()).sort();
+  const daysInMonth = (ym) => {
+    const [y, m] = ym.split("-").map(Number);
+    return new Date(y, m, 0).getDate();
+  };
+
+  const keys = Array.from(monthlyPages.keys()).sort();
   const first = keys[0], last = keys[keys.length - 1];
   const allMonths = [];
   const [fy, fm] = first.split("-").map(Number);
@@ -2291,15 +2424,16 @@ const renderReadingPace = (booksMeta) => {
     allMonths.push(`${y}-${String(m).padStart(2, "0")}`);
   }
 
-  const bookCounts = allMonths.map((k) => monthly.get(k) || 0);
-  const pageCounts = allMonths.map((k) => monthlyPages.get(k) || 0);
-  const maxBooks = Math.max(...bookCounts, 1);
-  const maxPages = Math.max(...pageCounts, 1);
+  const ppd = allMonths.map((k) => {
+    const pages = monthlyPages.get(k) || 0;
+    return pages > 0 ? Math.round((pages / daysInMonth(k)) * 10) / 10 : 0;
+  });
+  const maxPpd = Math.max(...ppd, 1);
 
   const dpr = window.devicePixelRatio || 1;
   const W = Math.min(1100, Math.max(600, allMonths.length * 28));
   const H = 260;
-  const pad = { top: 20, right: 50, bottom: 40, left: 44 };
+  const pad = { top: 24, right: 20, bottom: 40, left: 50 };
   canvas.width = W * dpr;
   canvas.height = H * dpr;
   canvas.style.width = W + "px";
@@ -2317,12 +2451,14 @@ const renderReadingPace = (booksMeta) => {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
-    for (let i = 0; i <= 4; i++) {
-      const y = pad.top + plotH - (i / 4) * plotH;
+    const gridSteps = 5;
+    const niceMax = Math.ceil(maxPpd / gridSteps) * gridSteps;
+    for (let i = 0; i <= gridSteps; i++) {
+      const y = pad.top + plotH - (i / gridSteps) * plotH;
       ctx.strokeStyle = cc.gridLine; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
       ctx.fillStyle = cc.axisLabel; ctx.font = "10px sans-serif"; ctx.textAlign = "right";
-      ctx.fillText(Math.round((maxBooks / 4) * i), pad.left - 6, y + 3);
+      ctx.fillText(Math.round((niceMax / gridSteps) * i), pad.left - 6, y + 3);
     }
 
     ctx.fillStyle = cc.axisLabel; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
@@ -2335,35 +2471,50 @@ const renderReadingPace = (booksMeta) => {
 
     const visibleCount = Math.max(1, Math.ceil(progress * totalLen));
 
-    const drawArea = (values, max, strokeColor, fillColor) => {
-      ctx.beginPath();
-      for (let i = 0; i < visibleCount && i < values.length; i++) {
+    // Fill area
+    ctx.beginPath();
+    for (let i = 0; i < visibleCount && i < ppd.length; i++) {
+      const x = pad.left + i * xStep;
+      const y = pad.top + plotH - (ppd[i] / niceMax) * plotH;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    const lastI = Math.min(visibleCount - 1, ppd.length - 1);
+    ctx.lineTo(pad.left + lastI * xStep, pad.top + plotH);
+    ctx.lineTo(pad.left, pad.top + plotH);
+    ctx.closePath();
+    ctx.fillStyle = cc.primaryFill; ctx.fill();
+
+    // Stroke line
+    ctx.beginPath();
+    for (let i = 0; i < visibleCount && i < ppd.length; i++) {
+      const x = pad.left + i * xStep;
+      const y = pad.top + plotH - (ppd[i] / niceMax) * plotH;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = cc.primary; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.stroke();
+
+    // Dots on non-zero months
+    for (let i = 0; i < visibleCount && i < ppd.length; i++) {
+      if (ppd[i] > 0) {
         const x = pad.left + i * xStep;
-        const y = pad.top + plotH - (values[i] / max) * plotH;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        const y = pad.top + plotH - (ppd[i] / niceMax) * plotH;
+        ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = cc.primary; ctx.fill();
+        ctx.strokeStyle = cc.tooltipBg; ctx.lineWidth = 1.5; ctx.stroke();
       }
-      ctx.strokeStyle = strokeColor; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.stroke();
-      const lastI = Math.min(visibleCount - 1, values.length - 1);
-      ctx.lineTo(pad.left + lastI * xStep, pad.top + plotH);
-      ctx.lineTo(pad.left, pad.top + plotH);
-      ctx.closePath();
-      ctx.fillStyle = fillColor; ctx.fill();
-    };
+    }
 
-    drawArea(pageCounts, maxPages, cc.secondary, cc.secondaryFill);
-    drawArea(bookCounts, maxBooks, cc.primary, cc.primaryFill);
-
-    const legendY = 10;
-    ctx.font = "11px sans-serif";
-    [{ label: "Books", color: cc.primary, x: W - pad.right - 120 },
-     { label: "Pages", color: cc.secondary, x: W - pad.right - 40 }].forEach((l) => {
-      ctx.fillStyle = l.color; ctx.fillRect(l.x, legendY, 10, 10);
-      ctx.fillStyle = cc.text; ctx.textAlign = "left"; ctx.fillText(l.label, l.x + 14, legendY + 9);
-    });
+    // Y-axis label
+    ctx.save();
+    ctx.fillStyle = cc.textDim; ctx.font = "10px sans-serif";
+    ctx.translate(12, pad.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center";
+    ctx.fillText("pages / day", 0, 0);
+    ctx.restore();
   };
 
   let drawing = false;
-
   const animate = () => {
     progress += 0.008;
     if (progress >= 1) { progress = 1; drawing = false; }
@@ -2372,60 +2523,80 @@ const renderReadingPace = (booksMeta) => {
   };
 
   drawFrame();
-
   canvas.onmouseenter = () => { progress = 0; drawing = true; if (_paceAnimFrame) cancelAnimationFrame(_paceAnimFrame); drawFrame(); _paceAnimFrame = requestAnimationFrame(animate); };
   canvas.onmouseleave = () => { drawing = false; progress = 1; if (_paceAnimFrame) cancelAnimationFrame(_paceAnimFrame); drawFrame(); };
 };
 
-/* ── Scatter plot (dots lift on hover) ──────────── */
+/* ── Genre vs Rating violin plot ──────────────── */
 let _scatterAnimFrame = null;
 const renderScatterPlot = (booksMeta) => {
   const canvas = document.getElementById("scatterCanvas");
   if (!canvas) return;
   if (_scatterAnimFrame) { cancelAnimationFrame(_scatterAnimFrame); _scatterAnimFrame = null; }
 
-  const valid = booksMeta.filter((b) => b.pageCount > 0 && b.userRating > 0);
+  const valid = booksMeta.filter((b) => b.userRating > 0 && b.genres && b.genres.length > 0);
   if (valid.length === 0) {
-    canvas.parentElement.innerHTML = '<p class="section-empty">Not enough data for scatter plot.</p>';
+    canvas.parentElement.innerHTML = '<p class="section-empty">Not enough rated data for genre chart.</p>';
     return;
   }
 
+  const genreRatings = new Map();
+  valid.forEach((b) => {
+    const g = b.genres[0];
+    if (!genreRatings.has(g)) genreRatings.set(g, []);
+    genreRatings.get(g).push(b.userRating);
+  });
+
+  const sorted = Array.from(genreRatings.entries())
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, 8);
+
+  const kde = (ratings, bw = 0.35) => {
+    const points = [];
+    for (let r = 0; r <= 5; r += 0.1) {
+      let sum = 0;
+      ratings.forEach((v) => {
+        const z = (r - v) / bw;
+        sum += Math.exp(-0.5 * z * z);
+      });
+      points.push({ r, d: sum / (ratings.length * bw * Math.sqrt(2 * Math.PI)) });
+    }
+    return points;
+  };
+
+  const violins = sorted.map(([name, ratings], i) => ({
+    name,
+    ratings,
+    count: ratings.length,
+    mean: ratings.reduce((a, b) => a + b, 0) / ratings.length,
+    median: [...ratings].sort((a, b) => a - b)[Math.floor(ratings.length / 2)],
+    kde: kde(ratings),
+    ci: i,
+  }));
+
+  const maxDensity = Math.max(...violins.flatMap((v) => v.kde.map((p) => p.d)), 0.01);
+
   const dpr = window.devicePixelRatio || 1;
-  const W = 700, H = 400;
-  const pad = { top: 20, right: 20, bottom: 44, left: 50 };
+  const W = Math.max(600, violins.length * 90 + 80);
+  const H = 380;
+  const pad = { top: 20, right: 20, bottom: 50, left: 50 };
   canvas.width = W * dpr;
   canvas.height = H * dpr;
   canvas.style.width = W + "px";
   canvas.style.height = H + "px";
   const ctx = canvas.getContext("2d");
-
-  const maxPages = Math.min(Math.max(...valid.map((b) => b.pageCount)), 1500);
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
+  const colW = plotW / violins.length;
+  const maxHalfW = colW * 0.38;
 
-  const genreMap = new Map();
-  let gIdx = 0;
-  valid.forEach((b) => {
-    const g = (b.genres && b.genres[0]) || "Unknown";
-    if (!genreMap.has(g)) genreMap.set(g, gIdx++);
-  });
-
-  const dots = valid.map((b) => {
-    const g = (b.genres && b.genres[0]) || "Unknown";
-    const ci = genreMap.get(g) || 0;
-    const pages = Math.min(b.pageCount, maxPages);
-    return {
-      baseX: pad.left + (pages / maxPages) * plotW,
-      baseY: pad.top + plotH - (b.userRating / 5) * plotH,
-      ci,
-    };
-  });
-
-  let liftT = 0;
-  let liftDir = 0;
+  let expandT = 1;
+  let expanding = false;
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
 
   const drawFrame = () => {
     const cc = getChartColors();
+    const t = easeOut(expandT);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
@@ -2436,59 +2607,66 @@ const renderScatterPlot = (booksMeta) => {
       ctx.fillStyle = cc.axisLabel; ctx.font = "10px sans-serif"; ctx.textAlign = "right";
       ctx.fillText(i, pad.left - 8, y + 3);
     }
-    for (let p = 0; p <= maxPages; p += 200) {
-      const x = pad.left + (p / maxPages) * plotW;
-      ctx.strokeStyle = cc.gridLine;
-      ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, pad.top + plotH); ctx.stroke();
-      ctx.fillStyle = cc.axisLabel; ctx.textAlign = "center";
-      ctx.fillText(p, x, H - pad.bottom + 16);
-    }
-    ctx.fillStyle = cc.textDim; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
-    ctx.fillText("Pages", W / 2, H - 4);
-    ctx.save(); ctx.translate(12, pad.top + plotH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText("Rating", 0, 0); ctx.restore();
 
-    const lift = liftT * 6;
-    const scale = 1 + liftT * 0.4;
-    dots.forEach((d) => {
+    ctx.save(); ctx.fillStyle = cc.textDim; ctx.font = "10px sans-serif";
+    ctx.translate(14, pad.top + plotH / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center"; ctx.fillText("Rating", 0, 0); ctx.restore();
+
+    violins.forEach((v, vi) => {
+      const cx = pad.left + colW * vi + colW / 2;
+      const color = cc.dot[v.ci % cc.dot.length];
+
+      // Draw violin shape (mirrored KDE)
       ctx.beginPath();
-      ctx.arc(d.baseX, d.baseY - lift, 5 * scale, 0, Math.PI * 2);
-      ctx.fillStyle = cc.dot[d.ci % cc.dot.length];
-      ctx.globalAlpha = 0.7 + liftT * 0.3;
-      ctx.fill();
-      if (liftT > 0.01) {
-        ctx.shadowColor = cc.dot[d.ci % cc.dot.length];
-        ctx.shadowBlur = 6 * liftT;
-        ctx.fill();
-        ctx.shadowColor = "transparent";
-        ctx.shadowBlur = 0;
+      const pts = v.kde;
+      for (let i = 0; i < pts.length; i++) {
+        const y = pad.top + plotH - (pts[i].r / 5) * plotH;
+        const hw = (pts[i].d / maxDensity) * maxHalfW * t;
+        if (i === 0) ctx.moveTo(cx + hw, y);
+        else ctx.lineTo(cx + hw, y);
       }
+      for (let i = pts.length - 1; i >= 0; i--) {
+        const y = pad.top + plotH - (pts[i].r / 5) * plotH;
+        const hw = (pts[i].d / maxDensity) * maxHalfW * t;
+        ctx.lineTo(cx - hw, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = color; ctx.globalAlpha = 0.3 * t; ctx.fill();
+      ctx.globalAlpha = 0.8 * t; ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.globalAlpha = 1;
-    });
 
-    const legendGenres = Array.from(genreMap.entries()).slice(0, 8);
-    ctx.font = "10px sans-serif";
-    legendGenres.forEach(([name, idx], i) => {
-      const lx = pad.left + (i % 4) * 160;
-      const ly = pad.top + plotH + 28 + Math.floor(i / 4) * 14;
-      ctx.fillStyle = cc.dot[idx % cc.dot.length];
-      ctx.fillRect(lx, ly - 8, 8, 8);
-      ctx.fillStyle = cc.textDim; ctx.textAlign = "left";
-      ctx.fillText(name.length > 18 ? name.slice(0, 17) + "…" : name, lx + 12, ly);
+      // Median line
+      const medY = pad.top + plotH - (v.median / 5) * plotH;
+      const medKde = v.kde.reduce((best, p) => Math.abs(p.r - v.median) < Math.abs(best.r - v.median) ? p : best, v.kde[0]);
+      const medHw = (medKde.d / maxDensity) * maxHalfW * t;
+      ctx.beginPath(); ctx.moveTo(cx - medHw, medY); ctx.lineTo(cx + medHw, medY);
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+
+      // Mean dot
+      const meanY = pad.top + plotH - (v.mean / 5) * plotH;
+      ctx.beginPath(); ctx.arc(cx, meanY, 3.5 * t, 0, Math.PI * 2);
+      ctx.fillStyle = cc.tooltipBg; ctx.fill();
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+
+      // Genre label
+      ctx.fillStyle = cc.axisLabel; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+      const label = v.name.length > 12 ? v.name.slice(0, 11) + "…" : v.name;
+      ctx.fillText(label, cx, H - pad.bottom + 14);
+      ctx.fillStyle = cc.textDim; ctx.font = "9px sans-serif";
+      ctx.fillText(`(${v.count})`, cx, H - pad.bottom + 26);
     });
   };
 
   const animate = () => {
-    liftT += liftDir * 0.06;
-    if (liftT >= 1) { liftT = 1; liftDir = 0; }
-    if (liftT <= 0) { liftT = 0; liftDir = 0; }
+    expandT += 0.015;
+    if (expandT >= 1) { expandT = 1; expanding = false; }
     drawFrame();
-    if (liftDir !== 0) _scatterAnimFrame = requestAnimationFrame(animate);
+    if (expanding) _scatterAnimFrame = requestAnimationFrame(animate);
   };
 
   drawFrame();
-
-  canvas.onmouseenter = () => { liftDir = 1; if (_scatterAnimFrame) cancelAnimationFrame(_scatterAnimFrame); _scatterAnimFrame = requestAnimationFrame(animate); };
-  canvas.onmouseleave = () => { liftDir = -1; if (_scatterAnimFrame) cancelAnimationFrame(_scatterAnimFrame); _scatterAnimFrame = requestAnimationFrame(animate); };
+  canvas.onmouseenter = () => { expandT = 0; expanding = true; if (_scatterAnimFrame) cancelAnimationFrame(_scatterAnimFrame); drawFrame(); _scatterAnimFrame = requestAnimationFrame(animate); };
+  canvas.onmouseleave = () => { expanding = false; expandT = 1; if (_scatterAnimFrame) cancelAnimationFrame(_scatterAnimFrame); drawFrame(); };
 };
 
 /* ── Genre Radar / Spider chart (expand from center on hover) ── */
@@ -2610,6 +2788,188 @@ const renderRadarChart = (booksMeta) => {
   canvas.onmouseleave = () => { expanding = false; expandT = 1; if (_radarAnimFrame) cancelAnimationFrame(_radarAnimFrame); drawFrame(); };
 };
 
+/* ── World Map (Google Charts GeoChart) ───────────── */
+let _geoChartReady = false;
+let _geoChart = null;
+let _geoChartData = null;
+let _geoChartBooksMeta = null;
+
+if (typeof google !== "undefined" && google.charts) {
+  google.charts.load("current", { packages: ["geochart"] });
+  google.charts.setOnLoadCallback(() => { _geoChartReady = true; });
+}
+
+const APP_TO_GEOCHART_NAME = {
+  "USA": "United States", "UK": "United Kingdom", "Korea": "South Korea",
+  "Russia": "Russia", "Iran": "Iran", "Czech Republic": "Czechia",
+  "Vietnam": "Vietnam", "Tanzania": "Tanzania", "Myanmar": "Myanmar",
+  "Hong Kong": "Hong Kong",
+};
+
+const toGeoChartName = (appName) => APP_TO_GEOCHART_NAME[appName] || appName;
+
+const showCountryPopup = (countryName, books) => {
+  const overlay = document.getElementById("worldmapPopupOverlay");
+  if (!overlay) return;
+  const titleEl = document.getElementById("worldmapPopupTitle");
+  const listEl = document.getElementById("worldmapPopupList");
+  if (titleEl) titleEl.textContent = `${countryName} — ${books.length} book${books.length !== 1 ? "s" : ""}`;
+  if (listEl) {
+    listEl.scrollTop = 0;
+    listEl.innerHTML = books.map((b) => {
+      const gFb = b.isbn ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(b.isbn)}&printsec=frontcover&img=1&zoom=1` : "";
+      let cover;
+      if (b.coverUrl) {
+        const oe = gFb
+          ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');}" data-fallback="${gFb}"`
+          : `onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');"`;
+        cover = `<img src="${b.coverUrl}" alt="" class="wm-popup-cover" loading="lazy" referrerpolicy="no-referrer" ${oe} /><div class="wm-popup-cover wm-popup-cover-empty" style="display:none"></div>`;
+      } else if (gFb) {
+        cover = `<img src="${gFb}" alt="" class="wm-popup-cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');" /><div class="wm-popup-cover wm-popup-cover-empty" style="display:none"></div>`;
+      } else {
+        cover = `<div class="wm-popup-cover wm-popup-cover-empty"></div>`;
+      }
+      const author = (b.authors && b.authors[0]) || b.authorHint || "";
+      const year = b.publishedYear || "";
+      const rating = b.userRating > 0 ? `${"★".repeat(Math.round(b.userRating))}${"☆".repeat(5 - Math.round(b.userRating))}` : "";
+      return `<div class="wm-popup-book">${cover}<div class="wm-popup-info"><div class="wm-popup-book-title">${b.title || "Untitled"}</div><div class="wm-popup-book-author">${author}${year ? ` (${year})` : ""}</div>${rating ? `<div class="wm-popup-book-rating">${rating}</div>` : ""}</div></div>`;
+    }).join("");
+  }
+  overlay.style.display = "";
+};
+
+const renderWorldMap = (booksMeta) => {
+  const container = document.getElementById("worldMap");
+  if (!container) return;
+  if (!_geoChartReady) {
+    setTimeout(() => renderWorldMap(booksMeta), 300);
+    return;
+  }
+
+  _geoChartBooksMeta = booksMeta;
+
+  const countryCounts = new Map();
+  const countryBooks = new Map();
+  booksMeta.forEach((b) => {
+    (b.countries || []).forEach((c) => {
+      const gName = toGeoChartName(c);
+      countryCounts.set(gName, (countryCounts.get(gName) || 0) + 1);
+      if (!countryBooks.has(gName)) countryBooks.set(gName, []);
+      countryBooks.get(gName).push(b);
+    });
+  });
+
+  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+
+  const ALL_COUNTRIES = [
+    "Afghanistan","Albania","Algeria","Andorra","Angola","Argentina","Armenia",
+    "Australia","Austria","Azerbaijan","Bahamas","Bahrain","Bangladesh","Barbados",
+    "Belarus","Belgium","Belize","Benin","Bhutan","Bolivia","Bosnia and Herzegovina",
+    "Botswana","Brazil","Brunei","Bulgaria","Burkina Faso","Burundi","Cambodia",
+    "Cameroon","Canada","Central African Republic","Chad","Chile","China","Colombia",
+    "Congo","Costa Rica","Croatia","Cuba","Cyprus","Czechia","Denmark","Dominican Republic",
+    "Ecuador","Egypt","El Salvador","Equatorial Guinea","Eritrea","Estonia","Ethiopia",
+    "Fiji","Finland","France","Gabon","Gambia","Georgia","Germany","Ghana","Greece",
+    "Greenland","Guatemala","Guinea","Guyana","Haiti","Honduras","Hungary","Iceland","India",
+    "Indonesia","Iran","Iraq","Ireland","Israel","Italy","Jamaica","Japan","Jordan",
+    "Kazakhstan","Kenya","Kuwait","Kyrgyzstan","Laos","Latvia","Lebanon","Lesotho",
+    "Liberia","Libya","Lithuania","Luxembourg","Madagascar","Malawi","Malaysia","Mali",
+    "Malta","Mauritania","Mauritius","Mexico","Moldova","Mongolia","Montenegro","Morocco",
+    "Mozambique","Myanmar","Namibia","Nepal","Netherlands","New Zealand","Nicaragua",
+    "Niger","Nigeria","North Korea","North Macedonia","Norway","Oman","Pakistan",
+    "Panama","Papua New Guinea","Paraguay","Peru","Philippines","Poland","Portugal",
+    "Qatar","Romania","Russia","Rwanda","Saudi Arabia","Senegal","Serbia","Sierra Leone",
+    "Singapore","Slovakia","Slovenia","Somalia","South Africa","South Korea","South Sudan",
+    "Spain","Sri Lanka","Sudan","Suriname","Sweden","Switzerland","Syria","Taiwan",
+    "Tajikistan","Tanzania","Thailand","Togo","Trinidad and Tobago","Tunisia","Turkey",
+    "Turkmenistan","Uganda","Ukraine","United Arab Emirates","United Kingdom",
+    "United States","Uruguay","Uzbekistan","Venezuela","Vietnam","Yemen","Zambia","Zimbabwe",
+  ];
+
+  const dataTable = new google.visualization.DataTable();
+  dataTable.addColumn("string", "Country");
+  dataTable.addColumn("number", "Books");
+  dataTable.addColumn({ type: "string", role: "tooltip", p: { html: true } });
+
+  const tipBg = isDark ? "#2a3e50" : "#3a3a3a";
+  const tipColor = isDark ? "#e8dcd0" : "#f0f0f0";
+  const tipDim = isDark ? "#90b8d0" : "#b0b0b0";
+  const mkTooltip = (name, count) =>
+    `<div style="background:${tipBg};color:${tipColor};padding:8px 14px;border-radius:6px;font-family:sans-serif;font-size:12px;min-width:90px;">` +
+    `<div style="font-weight:700;font-size:13px;margin-bottom:${count > 0 ? "3px" : "0"}">${name}</div>` +
+    (count > 0 ? `<div style="color:${tipDim};font-size:11px;">Books read: &nbsp;${count}</div>` : "") +
+    `</div>`;
+
+  const added = new Set();
+  countryCounts.forEach((count, name) => {
+    dataTable.addRow([name, count, mkTooltip(name, count)]);
+    added.add(name);
+  });
+
+  ALL_COUNTRIES.forEach((name) => {
+    if (!added.has(name)) {
+      dataTable.addRow([name, null, mkTooltip(name, 0)]);
+    }
+  });
+
+  _geoChartData = { countryCounts, countryBooks, dataTable };
+
+  const options = {
+    backgroundColor: isDark ? "#0e1e2e" : "#f0e4d8",
+    colorAxis: {
+      colors: isDark
+        ? ["#80ffcc", "#50f0a0", "#28b868", "#0a7038"]
+        : ["#c8e8b8", "#78c060", "#388828", "#0e5010"],
+      minValue: 1,
+    },
+    defaultColor: isDark ? "#1c2c38" : "#ddd2c6",
+    datalessRegionColor: isDark ? "#1c2c38" : "#ddd2c6",
+    legend: "none",
+    tooltip: { isHtml: true, trigger: "hover", showTitle: false },
+    keepAspectRatio: true,
+    width: container.offsetWidth || 1100,
+    height: 480,
+    borderColor: isDark ? "#4a6878" : "#a09080",
+  };
+
+  if (!_geoChart) {
+    _geoChart = new google.visualization.GeoChart(container);
+    google.visualization.events.addListener(_geoChart, "select", () => {
+      const sel = _geoChart.getSelection();
+      if (!sel || sel.length === 0 || !_geoChartData) return;
+      const row = sel[0].row;
+      if (row == null || !_geoChartData.dataTable) return;
+      const name = _geoChartData.dataTable.getValue(row, 0);
+      const books = _geoChartData.countryBooks.get(name) || [];
+      _geoChart.setSelection([]);
+      if (books.length === 0) return;
+      showCountryPopup(name, books);
+    });
+    google.visualization.events.addListener(_geoChart, "regionClick", (e) => {
+      if (!_geoChartData) return;
+      const books = _geoChartData.countryBooks.get(e.region) || [];
+      _geoChart.setSelection([]);
+      if (books.length === 0) return;
+      showCountryPopup(e.region, books);
+    });
+  }
+
+  _geoChart.draw(dataTable, options);
+};
+
+const wmOverlay = document.getElementById("worldmapPopupOverlay");
+const wmCloseBtn = document.getElementById("worldmapPopupClose");
+const _closeWorldmapPopup = () => {
+  if (wmOverlay) wmOverlay.style.display = "none";
+  if (_geoChart) _geoChart.setSelection([]);
+};
+if (wmOverlay) {
+  wmOverlay.addEventListener("click", (e) => { if (e.target === wmOverlay) _closeWorldmapPopup(); });
+}
+if (wmCloseBtn) {
+  wmCloseBtn.addEventListener("click", _closeWorldmapPopup);
+}
+
 const renderMetadataSources = (booksMeta) => {
   if (!metadataSourcesWrap) return;
   if (!booksMeta || booksMeta.length === 0) {
@@ -2617,8 +2977,34 @@ const renderMetadataSources = (booksMeta) => {
     return;
   }
 
-  const rows = booksMeta
+  const sorted = [...booksMeta].sort((a, b) =>
+    (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" })
+  );
+
+  const letterSet = new Set();
+  sorted.forEach((book) => {
+    const ch = (book.title || "?")[0].toUpperCase();
+    letterSet.add(/[A-Z]/.test(ch) ? ch : "#");
+  });
+
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
+  const navHtml = `<div class="meta-alpha-nav">${alphabet
+    .map((ch) => {
+      const has = letterSet.has(ch);
+      return `<button type="button" class="meta-alpha-btn${has ? "" : " disabled"}" data-letter="${ch}"${has ? "" : " disabled"}>${ch}</button>`;
+    })
+    .join("")}</div>`;
+
+  let lastLetter = "";
+  const rows = sorted
     .map((book) => {
+      const ch = (book.title || "?")[0].toUpperCase();
+      const letter = /[A-Z]/.test(ch) ? ch : "#";
+      let anchor = "";
+      if (letter !== lastLetter) {
+        lastLetter = letter;
+        anchor = ` id="meta-letter-${letter}"`;
+      }
       const sources = book._sources || {};
       const yearCell = book.publishedYear ? sourceTag(sources.publishedYear || "openlibrary") : "--";
       const genresCell = Array.isArray(book.genres) && book.genres.length > 0 ? sourceTag(sources.genres || "openlibrary") : "--";
@@ -2628,7 +3014,7 @@ const renderMetadataSources = (booksMeta) => {
       const editorKey = escapeHtml(keyForBook(book));
       const editorTitle = escapeHtml(book.title);
       return `
-        <tr>
+        <tr${anchor}>
           <td title="${escapeHtml(book.title)}">${escapeHtml(book.title)}</td>
           <td>${yearCell}</td>
           <td>${genresCell}</td>
@@ -2641,32 +3027,59 @@ const renderMetadataSources = (booksMeta) => {
     .join("");
 
   metadataSourcesWrap.innerHTML = `
-    <table class="metadata-table">
-      <thead>
-        <tr>
-          <th>Book</th>
-          <th>Year</th>
-          <th>Genres</th>
-          <th>Countries</th>
-          <th>Cover</th>
-          <th>Override</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
+    ${navHtml}
+    <div class="metadata-table-scroll">
+      <table class="metadata-table">
+        <thead>
+          <tr>
+            <th>Book</th>
+            <th>Year</th>
+            <th>Genres</th>
+            <th>Countries</th>
+            <th>Cover</th>
+            <th>Override</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
   `;
+
+  const navEl = metadataSourcesWrap.querySelector(".meta-alpha-nav");
+  if (navEl) {
+    navEl.addEventListener("click", (e) => {
+      const btn = e.target.closest(".meta-alpha-btn:not(.disabled)");
+      if (!btn) return;
+      const letter = btn.dataset.letter;
+      const target = document.getElementById(`meta-letter-${letter}`);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+};
+
+const deleteFromPendingBtn = document.getElementById("deleteFromPendingBtn");
+
+const updatePendingBtnState = (bookKey) => {
+  const pending = loadPendingOverrides();
+  const isPending = !!pending.books[bookKey];
+  if (submitOverrideBtn) submitOverrideBtn.textContent = isPending ? "Update in Pending" : "Submit to Community";
+  if (deleteFromPendingBtn) deleteFromPendingBtn.style.display = isPending ? "" : "none";
 };
 
 const openOverrideEditor = (bookKey, bookTitle) => {
   if (!overrideEditor) return;
   overrideBookKey.value = bookKey || "";
   overrideEditorTitle.textContent = `Override Metadata: ${bookTitle || bookKey}`;
-  const existing = runtimeOverrides[bookKey] || {};
+  const local = runtimeOverrides[bookKey] || {};
+  const pending = loadPendingOverrides().books[bookKey] || {};
+  const existing = { ...pending, ...local };
   overrideYear.value = existing.publishedYear || "";
   overrideCountries.value = Array.isArray(existing.countries) ? existing.countries[0] || "" : "";
   overrideGenres.value = Array.isArray(existing.genres) ? existing.genres.join(", ") : "";
   overrideSeriesName.value = existing.seriesName || "";
+  overrideSeriesTotalBooks.value = existing.seriesTotalBooks || "";
   overrideCoverUrl.value = existing.coverUrl || "";
+  updatePendingBtnState(bookKey);
   overrideEditor.classList.add("is-visible");
   overrideEditor.scrollIntoView({ behavior: "smooth", block: "nearest" });
 };
@@ -2687,7 +3100,7 @@ const DEFAULT_DROPZONE_TEXT = "Drag 'n' drop CSV file here, or click to select f
 const applyRuntimeOverridesToCurrentBooks = () => {
   latestBooksMeta.forEach((book) => {
     const key = keyForBook(book);
-    const override = runtimeOverrides[key] || runtimeOverrides[book.title];
+    const override = runtimeOverrides[key] || runtimeOverrides[book.title] || (book.isbn && runtimeOverrides[book.isbn]);
     if (!override) return;
     if (override.publishedYear) {
       book.publishedYear = Number(override.publishedYear);
@@ -2709,40 +3122,94 @@ const applyRuntimeOverridesToCurrentBooks = () => {
       book.seriesName = override.seriesName;
       book._manualSeries = true;
     }
+    if (override.seriesTotalBooks && Number(override.seriesTotalBooks) >= 2) {
+      book._seriesTotalBooks = Number(override.seriesTotalBooks);
+    }
   });
 };
 
 const buildManualSeriesEntries = () => {
+  const overrideKeyOrder = new Map();
+  let orderIdx = 0;
+  [sharedOverrides, runtimeOverrides].forEach((src) => {
+    Object.keys(src).forEach((k) => {
+      if (!overrideKeyOrder.has(k)) overrideKeyOrder.set(k, orderIdx++);
+    });
+  });
+
   const manualGroups = new Map();
   latestBooksMeta.forEach((book) => {
     if (!book._manualSeries || !book.seriesName) return;
     const key = normalizeTitle(book.seriesName);
-    if (!manualGroups.has(key)) manualGroups.set(key, { name: book.seriesName, books: [] });
-    manualGroups.get(key).books.push(book);
+    if (!manualGroups.has(key)) manualGroups.set(key, { name: book.seriesName, declaredTotal: null, books: [] });
+    const grp = manualGroups.get(key);
+    if (book.seriesName.length > grp.name.length || (book.seriesName.length === grp.name.length && book.seriesName < grp.name)) {
+      grp.name = book.seriesName;
+    }
+    if (book._seriesTotalBooks && (!grp.declaredTotal || book._seriesTotalBooks > grp.declaredTotal)) {
+      grp.declaredTotal = book._seriesTotalBooks;
+    }
+    grp.books.push(book);
+  });
+
+  manualGroups.forEach((grp) => {
+    grp.books.sort((a, b) => {
+      const ya = a.publishedYear || 9999;
+      const yb = b.publishedYear || 9999;
+      if (ya !== yb) return ya - yb;
+      const na = a.seriesNumber || 9999;
+      const nb = b.seriesNumber || 9999;
+      if (na !== nb) return na - nb;
+      const oa = overrideKeyOrder.get(a.title) ?? overrideKeyOrder.get(a.isbn) ?? 9999;
+      const ob = overrideKeyOrder.get(b.title) ?? overrideKeyOrder.get(b.isbn) ?? 9999;
+      return oa - ob;
+    });
   });
   const entries = [];
-  manualGroups.forEach(({ name, books }) => {
+  manualGroups.forEach(({ name, declaredTotal, books }) => {
     if (books.length < 1) return;
+    const totalBooks = declaredTotal || books.length;
+    const readCount = books.length;
     entries.push({
       name,
-      totalBooks: books.length,
-      readCount: books.length,
-      covers: books.map((b) => ({ url: b.coverUrl || "", read: true })),
+      totalBooks,
+      readCount,
+      covers: books.map((b) => ({ url: b.coverUrl || "", isbn: b.isbn || "", read: true })),
+      books,
       _manual: true,
     });
   });
   return entries;
 };
 
-const rerenderFromCurrentMetadata = () => {
+const mergeManualSeriesIntoLatest = () => {
   const manualEntries = buildManualSeriesEntries();
-  const existingApiNames = new Set(latestSeriesData.filter((s) => !s._manual).map((s) => normalizeTitle(s.name)));
-  latestSeriesData = [
-    ...latestSeriesData.filter((s) => !s._manual),
-    ...manualEntries.filter((s) => !existingApiNames.has(normalizeTitle(s.name))),
-  ].sort((a, b) => a.name.localeCompare(b.name));
+  if (manualEntries.length === 0) return;
+  const manualByKey = new Map(manualEntries.map((s) => [normalizeTitle(s.name), s]));
+  const apiEntries = latestSeriesData.filter((s) => !s._manual);
+  const merged = [];
+  const handled = new Set();
+  apiEntries.forEach((s) => {
+    const k = normalizeTitle(s.name);
+    const manual = manualByKey.get(k);
+    if (manual) {
+      merged.push({ ...s, totalBooks: manual.totalBooks, readCount: manual.readCount, books: manual.books || s.books, _manual: true });
+      handled.add(k);
+    } else {
+      merged.push(s);
+    }
+  });
+  manualEntries.forEach((s) => {
+    if (!handled.has(normalizeTitle(s.name))) merged.push(s);
+  });
+  latestSeriesData = merged.sort((a, b) => a.name.localeCompare(b.name));
+};
+
+const rerenderFromCurrentMetadata = () => {
+  mergeManualSeriesIntoLatest();
   setYearTab(currentYearMode);
   renderDecadesSection(latestBooksMeta);
+  renderMostReadDecades(latestBooksMeta);
   setTaxonomyTab(currentTaxonomyMode);
   setThemesTab(currentThemesMode);
   setAuthorsTab(currentAuthorsMode);
@@ -2794,19 +3261,20 @@ const renderDecadesSection = (booksMeta) => {
         .sort((a, b) => (a.publishedYear || 9999) - (b.publishedYear || 9999))
         .slice(0, 20)
         .map((book) => {
+          const safeTitle = escapeHtml(book.title);
+          const googleFallback = book.isbn
+            ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(book.isbn)}&printsec=frontcover&img=1&zoom=1`
+            : "";
           if (book.coverUrl) {
-            const safeTitle = escapeHtml(book.title);
-            const googleFallback = book.isbn
-              ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(book.isbn)}&printsec=frontcover&img=1&zoom=1`
-              : "";
             const onerrorAttr = googleFallback
               ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';}" data-fallback="${googleFallback}"`
               : `onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';"`;
             return `<div class="cover-card" title="${safeTitle}"><img src="${book.coverUrl}" alt="${safeTitle} cover" loading="lazy" referrerpolicy="no-referrer" ${onerrorAttr} /></div>`;
           }
-          return `<div class="cover-card" title="${escapeHtml(book.title)}"><div class="cover-fallback">${escapeHtml(
-            book.title
-          )}</div></div>`;
+          if (googleFallback) {
+            return `<div class="cover-card" title="${safeTitle}"><img src="${googleFallback}" alt="${safeTitle} cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';" /></div>`;
+          }
+          return `<div class="cover-card" title="${safeTitle}"><div class="cover-fallback">${safeTitle}</div></div>`;
         })
         .join("");
 
@@ -2815,6 +3283,62 @@ const renderDecadesSection = (booksMeta) => {
           <div class="decade-meta">
             <h3>${entry.decade}s</h3>
             <p>★ Average ${entry.avg.toFixed(2)}</p>
+          </div>
+          <div class="decade-books">${covers}</div>
+        </article>
+      `;
+    })
+    .join("");
+};
+
+const renderMostReadDecades = (booksMeta) => {
+  if (!decadesReadList) return;
+  const groups = new Map();
+  booksMeta.forEach((book) => {
+    if (!book.publishedYear) return;
+    const decade = Math.floor(book.publishedYear / 10) * 10;
+    if (!groups.has(decade)) groups.set(decade, []);
+    groups.get(decade).push(book);
+  });
+
+  const ranked = Array.from(groups.entries())
+    .map(([decade, books]) => ({ decade, count: books.length, books }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  if (ranked.length === 0) {
+    decadesReadList.innerHTML = '<p class="section-empty">No books with publication year available.</p>';
+    return;
+  }
+
+  decadesReadList.innerHTML = ranked
+    .map((entry) => {
+      const covers = entry.books
+        .sort((a, b) => (a.publishedYear || 9999) - (b.publishedYear || 9999))
+        .slice(0, 20)
+        .map((book) => {
+          const safeTitle = escapeHtml(book.title);
+          const googleFallback = book.isbn
+            ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(book.isbn)}&printsec=frontcover&img=1&zoom=1`
+            : "";
+          if (book.coverUrl) {
+            const onerrorAttr = googleFallback
+              ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';}" data-fallback="${googleFallback}"`
+              : `onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';"`;
+            return `<div class="cover-card" title="${safeTitle}"><img src="${book.coverUrl}" alt="${safeTitle} cover" loading="lazy" referrerpolicy="no-referrer" ${onerrorAttr} /></div>`;
+          }
+          if (googleFallback) {
+            return `<div class="cover-card" title="${safeTitle}"><img src="${googleFallback}" alt="${safeTitle} cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';" /></div>`;
+          }
+          return `<div class="cover-card" title="${safeTitle}"><div class="cover-fallback">${safeTitle}</div></div>`;
+        })
+        .join("");
+
+      return `
+        <article class="decade-row">
+          <div class="decade-meta">
+            <h3>${entry.decade}s</h3>
+            <p><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:2px"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg> Books Read: ${entry.count}</p>
           </div>
           <div class="decade-books">${covers}</div>
         </article>
@@ -2941,9 +3465,10 @@ confirmUploadButton.addEventListener("click", async () => {
       statPages.textContent = metadata.totalPages > 0 ? formatNumber(metadata.totalPages) : "--";
       latestBooksMeta = metadata.booksMeta;
       latestSeriesData = metadata.seriesData || [];
-      console.log("[StatReads] Series data for collections:", latestSeriesData);
+      mergeManualSeriesIntoLatest();
       setYearTab(currentYearMode);
       renderDecadesSection(metadata.booksMeta);
+      renderMostReadDecades(metadata.booksMeta);
       setTaxonomyTab(currentTaxonomyMode);
       setThemesTab(currentThemesMode);
       setAuthorsTab(currentAuthorsMode);
@@ -2952,6 +3477,7 @@ confirmUploadButton.addEventListener("click", async () => {
       renderReadingPace(metadata.booksMeta);
       renderScatterPlot(metadata.booksMeta);
       renderRadarChart(metadata.booksMeta);
+      renderWorldMap(metadata.booksMeta);
       renderMetadataSources(metadata.booksMeta);
     } catch {
       if (loadingWrap) loadingWrap.style.display = "none";
@@ -2961,6 +3487,7 @@ confirmUploadButton.addEventListener("click", async () => {
       latestSeriesData = [];
       setYearTab(currentYearMode);
       renderDecadesSection([]);
+      renderMostReadDecades([]);
       setTaxonomyTab(currentTaxonomyMode);
       setThemesTab(currentThemesMode);
       setAuthorsTab(currentAuthorsMode);
@@ -2993,6 +3520,18 @@ metadataSourcesWrap.addEventListener("click", (event) => {
   openOverrideEditor(key, title);
 });
 
+const getExistingSeriesTotalBooks = (seriesName, excludeKey) => {
+  const normName = normalizeTitle(seriesName);
+  const allOverrides = { ...sharedOverrides, ...runtimeOverrides };
+  for (const [k, v] of Object.entries(allOverrides)) {
+    if (k === excludeKey) continue;
+    if (v.seriesName && normalizeTitle(v.seriesName) === normName && v.seriesTotalBooks) {
+      return v.seriesTotalBooks;
+    }
+  }
+  return null;
+};
+
 overrideEditor.addEventListener("submit", (event) => {
   event.preventDefault();
   const key = overrideBookKey.value.trim();
@@ -3015,7 +3554,23 @@ overrideEditor.addEventListener("submit", (event) => {
   if (singleCountry.length > 0) next.countries = singleCountry;
   const genres = parseCsvListInput(overrideGenres.value);
   if (genres.length > 0) next.genres = normalizeGenreLabels(genres);
-  if (overrideSeriesName.value.trim()) next.seriesName = sanitizeText(overrideSeriesName.value, 120);
+  if (overrideSeriesName.value.trim()) {
+    next.seriesName = sanitizeText(overrideSeriesName.value, 120);
+    const totalBooksVal = Number(overrideSeriesTotalBooks.value);
+    if (!Number.isFinite(totalBooksVal) || totalBooksVal < 2) {
+      alert("Total Books in Series is required when a Series Name is provided (minimum 2).");
+      overrideSeriesTotalBooks.focus();
+      return;
+    }
+    const existing = getExistingSeriesTotalBooks(next.seriesName, key);
+    if (existing && existing !== totalBooksVal) {
+      alert(`Another book in "${next.seriesName}" already has Total Books set to ${existing}. Please use the same value.`);
+      overrideSeriesTotalBooks.value = existing;
+      overrideSeriesTotalBooks.focus();
+      return;
+    }
+    next.seriesTotalBooks = totalBooksVal;
+  }
   if (rawCoverUrl) next.coverUrl = toDirectImageUrl(rawCoverUrl);
 
   if (Object.keys(next).length === 0) {
@@ -3030,25 +3585,89 @@ overrideEditor.addEventListener("submit", (event) => {
 });
 
 const GITHUB_REPO = "atandritC/StatReads";
+const PENDING_OVERRIDES_KEY = "statreads_pending_overrides";
+
+const loadPendingOverrides = () => {
+  try { return JSON.parse(localStorage.getItem(PENDING_OVERRIDES_KEY)) || { books: {}, authors: {} }; }
+  catch { return { books: {}, authors: {} }; }
+};
+const savePendingOverrides = (pending) => localStorage.setItem(PENDING_OVERRIDES_KEY, JSON.stringify(pending));
+
+const getPendingCount = () => {
+  const p = loadPendingOverrides();
+  return Object.keys(p.books).length + Object.keys(p.authors).length;
+};
+
+const updateSubmitAllBtnVisibility = () => {
+  const btn = document.getElementById("submitAllOverridesBtn");
+  if (!btn) return;
+  const count = getPendingCount();
+  btn.style.display = count > 0 ? "" : "none";
+  btn.textContent = `Submit All to Community (${count} pending)`;
+};
 
 submitOverrideBtn.addEventListener("click", () => {
   const key = overrideBookKey.value.trim();
   if (!key) return;
-  const entry = runtimeOverrides[key];
-  if (!entry || Object.keys(entry).length === 0) {
-    alert("Save the override first, then submit.");
+
+  const entry = {};
+  const yearValue = Number(overrideYear.value);
+  if (Number.isFinite(yearValue) && yearValue >= 1000 && yearValue <= 2100) entry.publishedYear = yearValue;
+  const singleCountry = pickSingleCountry([overrideCountries.value.trim()]);
+  if (singleCountry.length > 0) entry.countries = singleCountry;
+  const genres = parseCsvListInput(overrideGenres.value);
+  if (genres.length > 0) entry.genres = normalizeGenreLabels(genres);
+  if (overrideSeriesName.value.trim()) {
+    entry.seriesName = sanitizeText(overrideSeriesName.value, 120);
+    const totalBooksVal2 = Number(overrideSeriesTotalBooks.value);
+    if (!Number.isFinite(totalBooksVal2) || totalBooksVal2 < 2) {
+      alert("Total Books in Series is required when a Series Name is provided (minimum 2).");
+      overrideSeriesTotalBooks.focus();
+      return;
+    }
+    const existing2 = getExistingSeriesTotalBooks(entry.seriesName, overrideBookKey.value.trim());
+    if (existing2 && existing2 !== totalBooksVal2) {
+      alert(`Another book in "${entry.seriesName}" already has Total Books set to ${existing2}. Please use the same value.`);
+      overrideSeriesTotalBooks.value = existing2;
+      overrideSeriesTotalBooks.focus();
+      return;
+    }
+    entry.seriesTotalBooks = totalBooksVal2;
+  }
+  const rawCoverUrl = overrideCoverUrl.value.trim();
+  if (rawCoverUrl) {
+    if (!isAllowedCoverUrl(toDirectImageUrl(rawCoverUrl))) {
+      alert("Cover URL must be HTTPS from a known book cover source:\n" + ALLOWED_COVER_HOSTS.join(", "));
+      overrideCoverUrl.focus();
+      return;
+    }
+    entry.coverUrl = toDirectImageUrl(rawCoverUrl);
+  }
+
+  if (Object.keys(entry).length === 0) {
+    alert("Fill in at least one field before submitting.");
     return;
   }
-  const json = JSON.stringify({ [key]: entry }, null, 2);
-  const title = encodeURIComponent(`[Override] ${key}`);
-  const body = encodeURIComponent(
-    `### Book\n**${key}**\n\n### Override JSON\n\`\`\`json\n${json}\n\`\`\`\n\n### Why\n_Briefly describe what was wrong or missing._`
-  );
-  window.open(
-    `https://github.com/${GITHUB_REPO}/issues/new?title=${title}&body=${body}&labels=override`,
-    "_blank"
-  );
+
+  const pending = loadPendingOverrides();
+  pending.books[key] = entry;
+  savePendingOverrides(pending);
+  updateSubmitAllBtnVisibility();
+  updatePendingBtnState(key);
+  alert(`"${key}" added to pending submissions (${getPendingCount()} total).\nClick "Submit All to Community" in the Metadata section to open one GitHub issue.`);
 });
+
+if (deleteFromPendingBtn) {
+  deleteFromPendingBtn.addEventListener("click", () => {
+    const key = overrideBookKey.value.trim();
+    if (!key) return;
+    const pending = loadPendingOverrides();
+    delete pending.books[key];
+    savePendingOverrides(pending);
+    updateSubmitAllBtnVisibility();
+    updatePendingBtnState(key);
+  });
+}
 
 clearOverrideBtn.addEventListener("click", () => {
   const key = overrideBookKey.value.trim();
@@ -3075,6 +3694,41 @@ exportOverridesBtn.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
+const submitAllOverridesBtn = document.getElementById("submitAllOverridesBtn");
+if (submitAllOverridesBtn) {
+  submitAllOverridesBtn.addEventListener("click", () => {
+    const pending = loadPendingOverrides();
+    const bookCount = Object.keys(pending.books).length;
+    const authorCount = Object.keys(pending.authors).length;
+    const total = bookCount + authorCount;
+    if (total === 0) {
+      alert("No pending overrides to submit.");
+      return;
+    }
+
+    const sections = [];
+    if (bookCount > 0) {
+      sections.push(`### Book Overrides (${bookCount})\n\n\`\`\`json\n${JSON.stringify(pending.books, null, 2)}\n\`\`\``);
+    }
+    if (authorCount > 0) {
+      sections.push(`### Author Overrides (${authorCount})\n\n\`\`\`json\n${JSON.stringify(pending.authors, null, 2)}\n\`\`\``);
+    }
+    sections.push("### Why\n_Briefly describe what was wrong or missing._");
+
+    const title = encodeURIComponent(`[Batch Override] ${total} item${total > 1 ? "s" : ""}`);
+    const body = encodeURIComponent(sections.join("\n\n"));
+    window.open(
+      `https://github.com/${GITHUB_REPO}/issues/new?title=${title}&body=${body}&labels=override`,
+      "_blank"
+    );
+
+    savePendingOverrides({ books: {}, authors: {} });
+    updateSubmitAllBtnVisibility();
+  });
+
+  updateSubmitAllBtnVisibility();
+}
+
 // Author photo override popup wiring.
 const authorPhotoOverlay = document.getElementById("authorPhotoOverlay");
 const authorPopupTitle = document.getElementById("authorPopupTitle");
@@ -3084,13 +3738,23 @@ const authorPopupSave = document.getElementById("authorPopupSave");
 const authorPopupSubmit = document.getElementById("authorPopupSubmit");
 const authorPopupClear = document.getElementById("authorPopupClear");
 const authorPopupCancel = document.getElementById("authorPopupCancel");
+const authorPopupDeletePending = document.getElementById("authorPopupDeletePending");
+
+const updateAuthorPendingBtnState = (authorName) => {
+  const pending = loadPendingOverrides();
+  const isPending = !!pending.authors[authorName];
+  if (authorPopupSubmit) authorPopupSubmit.textContent = isPending ? "Update in Pending" : "Submit to Community";
+  if (authorPopupDeletePending) authorPopupDeletePending.style.display = isPending ? "" : "none";
+};
 
 const openAuthorPopup = (authorName) => {
   if (!authorPhotoOverlay) return;
   authorPopupKey.value = authorName;
   authorPopupTitle.textContent = authorName;
-  const existing = authorOverrides[authorName];
-  authorPopupUrl.value = existing?.photoUrl || "";
+  const local = authorOverrides[authorName];
+  const pendingAuthor = loadPendingOverrides().authors[authorName];
+  authorPopupUrl.value = local?.photoUrl || pendingAuthor?.photoUrl || "";
+  updateAuthorPendingBtnState(authorName);
   authorPhotoOverlay.style.display = "";
   authorPopupUrl.focus();
 };
@@ -3147,20 +3811,35 @@ if (authorPopupSubmit) {
   authorPopupSubmit.addEventListener("click", () => {
     const name = authorPopupKey.value;
     if (!name) return;
-    const entry = authorOverrides[name];
-    if (!entry || !entry.photoUrl) {
-      alert("Save the author photo override first, then submit.");
+    const rawUrl = authorPopupUrl.value.trim();
+    if (!rawUrl) {
+      alert("Enter a photo URL before submitting.");
+      authorPopupUrl.focus();
       return;
     }
-    const json = JSON.stringify({ [name]: entry }, null, 2);
-    const title = encodeURIComponent(`[Author Override] ${name}`);
-    const body = encodeURIComponent(
-      `### Author\n**${name}**\n\n### Override JSON\n\`\`\`json\n${json}\n\`\`\`\n\n### Why\n_Briefly describe what was wrong or missing._`
-    );
-    window.open(
-      `https://github.com/${GITHUB_REPO}/issues/new?title=${title}&body=${body}&labels=override`,
-      "_blank"
-    );
+    if (!isAllowedCoverUrl(rawUrl)) {
+      alert("Photo URL must be HTTPS from a known host:\n" + ALLOWED_COVER_HOSTS.join(", "));
+      authorPopupUrl.focus();
+      return;
+    }
+    const pending = loadPendingOverrides();
+    pending.authors[name] = { photoUrl: rawUrl };
+    savePendingOverrides(pending);
+    updateSubmitAllBtnVisibility();
+    updateAuthorPendingBtnState(name);
+    alert(`Author "${name}" added to pending submissions (${getPendingCount()} total).\nClick "Submit All to Community" in the Metadata section to open one GitHub issue.`);
+  });
+}
+
+if (authorPopupDeletePending) {
+  authorPopupDeletePending.addEventListener("click", () => {
+    const name = authorPopupKey.value;
+    if (!name) return;
+    const pending = loadPendingOverrides();
+    delete pending.authors[name];
+    savePendingOverrides(pending);
+    updateSubmitAllBtnVisibility();
+    updateAuthorPendingBtnState(name);
   });
 }
 
@@ -3202,6 +3881,7 @@ function refreshChartsForTheme() {
   renderReadingPace(latestBooksMeta);
   renderScatterPlot(latestBooksMeta);
   renderRadarChart(latestBooksMeta);
+  renderWorldMap(latestBooksMeta);
 }
 
 /* ── Theme toggle ──────────────────────────────────── */

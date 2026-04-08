@@ -7,6 +7,7 @@
     <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
     <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
     <link rel="stylesheet" href="./styles.css" />
+    <script src="https://www.gstatic.com/charts/loader.js"></script>
   </head>
   <body>
     <button id="globalThemeToggle" class="global-theme-toggle" type="button" title="Toggle theme" aria-label="Toggle light/dark theme"><svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg></button>
@@ -132,6 +133,16 @@
         </div>
       </section>
 
+      <section class="decades-section">
+        <div class="line-heading">
+          <span>HIGHEST READ DECADES</span>
+          <span class="line-divider"></span>
+        </div>
+        <div id="decadesReadList" class="decades-list">
+          <p class="section-loading">Upload and confirm CSV to load decades.</p>
+        </div>
+      </section>
+
       <section class="taxonomy-section">
         <div class="insights-top">
           <div class="line-heading">
@@ -210,7 +221,7 @@
 
       <section class="reading-pace-section">
         <div class="line-heading">
-          <span>READING PACE</span>
+          <span>READING PACE (Pages/Day)</span>
           <span class="line-divider"></span>
         </div>
         <div class="reading-pace-chart-wrap">
@@ -220,7 +231,7 @@
 
       <section class="scatter-section">
         <div class="line-heading">
-          <span>BOOK LENGTH vs RATING</span>
+          <span>GENRE vs RATING</span>
           <span class="line-divider"></span>
         </div>
         <div class="scatter-chart-wrap">
@@ -257,6 +268,32 @@
         </div>
       </section>
 
+      <section class="worldmap-section">
+        <div class="line-heading">
+          <span>WORLD MAP</span>
+          <span class="line-divider"></span>
+        </div>
+        <div class="worldmap-wrap">
+          <div id="worldMap"></div>
+        </div>
+      </section>
+
+      <div id="collectionPopupOverlay" class="wm-overlay" style="display:none">
+        <div class="wm-popup">
+          <button id="collectionPopupClose" type="button" class="wm-popup-close">&times;</button>
+          <h3 id="collectionPopupTitle" class="wm-popup-heading"></h3>
+          <div id="collectionPopupList" class="wm-popup-list"></div>
+        </div>
+      </div>
+
+      <div id="worldmapPopupOverlay" class="wm-overlay" style="display:none">
+        <div class="wm-popup">
+          <button id="worldmapPopupClose" type="button" class="wm-popup-close">&times;</button>
+          <h3 id="worldmapPopupTitle" class="wm-popup-heading"></h3>
+          <div id="worldmapPopupList" class="wm-popup-list"></div>
+        </div>
+      </div>
+
       <div id="authorPhotoOverlay" class="author-photo-overlay" style="display:none">
         <div class="author-photo-popup">
           <h4 id="authorPopupTitle">Override Author Photo</h4>
@@ -268,6 +305,7 @@
           <div class="author-popup-actions">
             <button id="authorPopupSave" type="button" class="confirm-button">Save</button>
             <button id="authorPopupSubmit" type="button" class="secondary-button">Submit to Community</button>
+            <button id="authorPopupDeletePending" type="button" class="secondary-button" style="display:none">Remove from Pending</button>
             <button id="authorPopupClear" type="button" class="secondary-button">Clear</button>
             <button id="authorPopupCancel" type="button" class="secondary-button">Cancel</button>
           </div>
@@ -280,7 +318,8 @@
           <span class="line-divider"></span>
         </div>
         <div class="metadata-actions">
-          <p class="metadata-help-text">APIs are not always reliable — override any missing or incorrect book/author data locally, and hit "Submit to Community" so everyone benefits.</p>
+          <p class="metadata-help-text">APIs are not always reliable — override any missing or incorrect book/author data locally, and hit "Submit to Community" so everyone benefits. All pending overrides are batched into a single GitHub issue.</p>
+          <button id="submitAllOverridesBtn" type="button" class="confirm-button submit-all-btn" style="display:none">Submit All to Community</button>
         </div>
         <div id="metadataSourcesWrap" class="metadata-wrap">
           <p class="section-loading">Upload and confirm CSV to view metadata source tags.</p>
@@ -305,6 +344,10 @@
               Series Name
               <input id="overrideSeriesName" type="text" placeholder="e.g. Harry Potter" />
             </label>
+            <label>
+              Total Books in Series
+              <input id="overrideSeriesTotalBooks" type="number" min="2" placeholder="e.g. 7" />
+            </label>
             <label class="override-full-width">
               Cover URL
               <input id="overrideCoverUrl" type="url" placeholder="https://..." />
@@ -313,6 +356,7 @@
           <div class="override-actions">
             <button id="saveOverrideBtn" type="submit" class="confirm-button">Save Override</button>
             <button id="submitOverrideBtn" type="button" class="secondary-button">Submit to Community</button>
+            <button id="deleteFromPendingBtn" type="button" class="secondary-button" style="display:none">Remove from Pending</button>
             <button id="clearOverrideBtn" type="button" class="secondary-button">Clear Override</button>
             <button id="cancelOverrideBtn" type="button" class="secondary-button">Cancel</button>
           </div>
