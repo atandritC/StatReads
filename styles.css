@@ -1745,18 +1745,3 @@ body {
   }
 }
 
-/* Site footer */
-.site-footer {
-  text-align: center;
-  padding: 28px 16px 20px;
-  font-size: 0.82rem;
-  color: var(--text-subtle);
-  letter-spacing: 0.5px;
-  border-top: 1px solid var(--divider);
-  margin-top: 20px;
-}
-
-.site-footer strong {
-  color: var(--text-main);
-  font-weight: 600;
-}
