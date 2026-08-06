@@ -60,7 +60,6 @@
 
     <section id="dashboardView" class="dashboard view">
       <header class="dashboard-hero">
-        <canvas id="heroLineLeft" class="hero-line-canvas hero-line-canvas-left" width="300" height="180"></canvas>
         <div class="hero-center">
           <h1 class="hero-title">A Life in Books</h1>
           <div class="hero-badge-row">
@@ -74,7 +73,6 @@
             <p id="loadingText" class="loading-text">Fetching metadata…</p>
           </div>
         </div>
-        <canvas id="heroLineRight" class="hero-line-canvas hero-line-canvas-right" width="300" height="180"></canvas>
       </header>
 
       <section class="stats-strip">
@@ -312,14 +310,73 @@
         </div>
       </div>
 
+      <div id="submitChoiceOverlay" class="wm-overlay" style="display:none">
+        <div class="wm-popup submit-choice-popup">
+          <button id="submitChoiceClose" type="button" class="wm-popup-close">&times;</button>
+          <h3 class="wm-popup-heading">Submit to Community</h3>
+          <div class="submit-choice-body">
+            <p id="submitChoiceSummary" class="submit-choice-summary"></p>
+
+            <div id="submitChoiceOptions" class="submit-choice-options">
+              <button id="submitViaGithubBtn" type="button" class="submit-choice-option">
+                <span class="submit-choice-option-title">Open a GitHub issue</span>
+                <span class="submit-choice-option-note">Opens a pre-filled issue you review and submit yourself. Needs a GitHub account and an active sign-in.</span>
+              </button>
+              <button id="submitViaEmailBtn" type="button" class="submit-choice-option">
+                <span class="submit-choice-option-title">Send by email instead</span>
+                <span class="submit-choice-option-note">No account needed. StatReads sends it for you — your own inbox and address are never used.</span>
+              </button>
+            </div>
+
+            <form id="submitEmailForm" class="submit-email-form" autocomplete="off" style="display:none">
+              <label class="submit-email-label">
+                Credit these corrections to (optional)
+                <input id="submitEmailName" type="text" maxlength="80" placeholder="Name or handle" />
+              </label>
+              <label class="submit-email-label">
+                Your email, only if you want a reply (optional)
+                <input id="submitEmailReply" type="email" maxlength="120" placeholder="Left blank means fully anonymous" />
+              </label>
+              <label class="submit-email-label">
+                What was wrong or missing? (optional)
+                <textarea id="submitEmailNote" rows="3" maxlength="1000" placeholder="e.g. the API returned the reprint year instead of the original publication year"></textarea>
+              </label>
+              <input id="submitEmailBotcheck" type="checkbox" name="botcheck" tabindex="-1" style="display:none" />
+              <div class="submit-choice-actions">
+                <button id="submitEmailSend" type="submit" class="confirm-button">Send Overrides</button>
+                <button id="submitEmailBack" type="button" class="secondary-button">Back</button>
+              </div>
+            </form>
+
+            <div id="submitGithubConfirm" class="submit-fallback" style="display:none">
+              <p class="submit-fallback-text">A pre-filled issue is open in a new tab. Your overrides stay queued until you tell us the issue went through, so nothing is lost if the tab was blocked or you changed your mind.</p>
+              <div class="submit-choice-actions">
+                <button id="submitGithubDone" type="button" class="confirm-button">I submitted it</button>
+                <button id="submitGithubKeep" type="button" class="secondary-button">Keep it queued</button>
+              </div>
+            </div>
+
+            <div id="submitFallback" class="submit-fallback" style="display:none">
+              <p id="submitFallbackText" class="submit-fallback-text"></p>
+              <div class="submit-choice-actions">
+                <button id="submitCopyJsonBtn" type="button" class="secondary-button">Copy JSON</button>
+                <button id="submitDownloadJsonBtn" type="button" class="secondary-button">Download JSON</button>
+                <button id="submitFallbackBack" type="button" class="secondary-button">Back to Options</button>
+              </div>
+            </div>
+
+            <p id="submitChoiceStatus" class="submit-choice-status" style="display:none"></p>
+          </div>
+        </div>
+      </div>
+
       <section class="metadata-section">
         <div class="line-heading">
           <span>METADATA SOURCES</span>
           <span class="line-divider"></span>
         </div>
         <div class="metadata-actions">
-          <p class="metadata-help-text">APIs are not always reliable — override any missing or incorrect book/author data locally, and hit "Submit to Community" so everyone benefits. All pending overrides are batched into a single GitHub issue.</p>
-          <button id="submitAllOverridesBtn" type="button" class="confirm-button submit-all-btn" style="display:none">Submit All to Community</button>
+          <p class="metadata-help-text">APIs are not always reliable — override any missing or incorrect book/author data locally, and hit "Submit to Community" so everyone benefits. All pending overrides are batched into one submission you send from the bottom of this section, either as a GitHub issue or by email if you'd rather not use GitHub.</p>
         </div>
         <div id="metadataSourcesWrap" class="metadata-wrap">
           <p class="section-loading">Upload and confirm CSV to view metadata source tags.</p>
@@ -363,6 +420,7 @@
         </form>
         <div class="metadata-actions metadata-actions-end">
           <button id="exportOverridesBtn" type="button" class="secondary-button small-action-btn">Export Overrides JSON</button>
+          <button id="submitAllOverridesBtn" type="button" class="confirm-button submit-all-btn" style="display:none">Submit All to Community</button>
         </div>
       </section>
     </section>

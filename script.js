@@ -52,7 +52,6 @@ const overrideGenres = document.getElementById("overrideGenres");
 const overrideSeriesName = document.getElementById("overrideSeriesName");
 const overrideSeriesTotalBooks = document.getElementById("overrideSeriesTotalBooks");
 const overrideCoverUrl = document.getElementById("overrideCoverUrl");
-const saveOverrideBtn = document.getElementById("saveOverrideBtn");
 const submitOverrideBtn = document.getElementById("submitOverrideBtn");
 const clearOverrideBtn = document.getElementById("clearOverrideBtn");
 const cancelOverrideBtn = document.getElementById("cancelOverrideBtn");
@@ -251,6 +250,41 @@ const escapeHtml = (value) =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
+const googleCoverFallback = (isbn) =>
+  isbn ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(isbn)}&printsec=frontcover&img=1&zoom=1` : "";
+
+// Cover images retry via Google Books, then degrade to a placeholder. This is delegated rather
+// than done with inline onerror handlers: those had to interpolate the book title into a JS
+// string literal, and a title containing an apostrophe would break out of it. Error events do
+// not bubble, hence the capture phase.
+document.addEventListener(
+  "error",
+  (event) => {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement)) return;
+    const mode = img.dataset.coverFallback;
+    if (!mode) return;
+    if (img.dataset.fallback) {
+      img.src = img.dataset.fallback;
+      img.dataset.fallback = "";
+      return;
+    }
+    img.style.display = "none";
+    if (mode === "sibling") {
+      const placeholder = img.nextElementSibling;
+      if (placeholder) placeholder.style.display = "";
+      return;
+    }
+    const parent = img.parentElement;
+    if (!parent) return;
+    const text = document.createElement("div");
+    text.className = "cover-fallback";
+    text.textContent = img.dataset.title || "";
+    parent.replaceChildren(text);
+  },
+  true
+);
+
 const toTitleCase = (value) =>
   String(value || "")
     .split(" ")
@@ -356,7 +390,6 @@ const ALLOWED_COVER_HOSTS = [
   "s.gr-assets.com",
   "images-na.ssl-images-goodreads.com",
   "images.gr-assets.com",
-  "upload.wikimedia.org",
   "cdn.kobo.com",
   "prodimage.images-bn.com",
   "pictures.abebooks.com",
@@ -776,7 +809,10 @@ const buildStats = (headers, rows, source) => {
     if (title && bookMap.has(title)) {
       const entry = bookMap.get(title);
       if (source === "Goodreads") {
-        const grTimes = parseNumber(getCell(row, idx, "Number of Times Read"));
+        // Current exports call this "Read Count"; older ones used "Number of Times Read".
+        const grTimes = parseNumber(
+          getCell(row, idx, "Read Count") || getCell(row, idx, "Number of Times Read")
+        );
         entry.timesRead = Math.max(entry.timesRead, grTimes, 1);
       } else {
         entry.timesRead += 1;
@@ -832,90 +868,6 @@ const parsePublishedYear = (value) => {
   const year = Number(match[1]);
   if (!Number.isFinite(year) || year < 1000 || year > 2100) return null;
   return year;
-};
-
-const fetchWikidataMetadata = async (book, fetchJson) => {
-  const query = `${book.title} ${book.authorHint || ""}`.trim();
-  const searchPayload = await fetchJson(
-    `https://www.wikidata.org/w/api.php?action=wbsearchentities&format=json&language=en&type=item&limit=5&origin=*&search=${encodeURIComponent(
-      query
-    )}`
-  );
-  if (!searchPayload || !Array.isArray(searchPayload.search) || searchPayload.search.length === 0) return null;
-
-  const ranked = [...searchPayload.search].sort((a, b) => {
-    const simA = titleSimilarity(a.label || "", book.title);
-    const simB = titleSimilarity(b.label || "", book.title);
-    return simB - simA;
-  });
-  const best = ranked[0];
-  if (!best || !best.id) return null;
-
-  const entityPayload = await fetchJson(
-    `https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=${encodeURIComponent(
-      best.id
-    )}&props=claims|labels&languages=en&origin=*`
-  );
-  const entity = entityPayload?.entities?.[best.id];
-  if (!entity || !entity.claims) return null;
-
-  const readEntityIdClaims = (pid) =>
-    (entity.claims[pid] || [])
-      .map((claim) => claim?.mainsnak?.datavalue?.value?.id)
-      .filter(Boolean);
-  const readTimeClaimYear = (pid) => {
-    const claim = (entity.claims[pid] || [])[0];
-    const raw = claim?.mainsnak?.datavalue?.value?.time;
-    return parsePublishedYear(raw);
-  };
-  const readStringClaim = (pid) => {
-    const claim = (entity.claims[pid] || [])[0];
-    return claim?.mainsnak?.datavalue?.value || null;
-  };
-
-  const publicationYear = readTimeClaimYear("P577");
-  const imageFile = readStringClaim("P18");
-  const genreIds = readEntityIdClaims("P136");
-  const countryIds = readEntityIdClaims("P495");
-  const authorIds = readEntityIdClaims("P50");
-
-  let authorCountryIds = [];
-  if (authorIds.length > 0) {
-    const authorEntitiesPayload = await fetchJson(
-      `https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=${encodeURIComponent(
-        authorIds.join("|")
-      )}&props=claims|labels&languages=en&origin=*`
-    );
-    authorIds.forEach((id) => {
-      const authorEntity = authorEntitiesPayload?.entities?.[id];
-      const ids =
-        (authorEntity?.claims?.P27 || [])
-          .map((claim) => claim?.mainsnak?.datavalue?.value?.id)
-          .filter(Boolean) || [];
-      authorCountryIds.push(...ids);
-    });
-  }
-
-  const idsToResolve = Array.from(new Set([...genreIds, ...countryIds, ...authorCountryIds]));
-  let idLabelMap = new Map();
-  if (idsToResolve.length > 0) {
-    const labelsPayload = await fetchJson(
-      `https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=${encodeURIComponent(
-        idsToResolve.join("|")
-      )}&props=labels&languages=en&origin=*`
-    );
-    idsToResolve.forEach((id) => {
-      const label = labelsPayload?.entities?.[id]?.labels?.en?.value;
-      if (label) idLabelMap.set(id, label);
-    });
-  }
-
-  return {
-    publicationYear,
-    genres: genreIds.map((id) => idLabelMap.get(id)).filter(Boolean),
-    countries: [...countryIds, ...authorCountryIds].map((id) => idLabelMap.get(id)).filter(Boolean),
-    imageFile,
-  };
 };
 
 const fetchWikidataAuthorCountries = async (authorQuery, fetchJsonFn) => {
@@ -1017,6 +969,62 @@ const cleanSeriesBookTitle = (title) =>
     .replace(/\b(anniversary|deluxe|illustrated|enhanced|expanded|revised)\s*edition\b/i, "")
     .replace(/\s+/g, " ")
     .trim();
+
+// Overrides overwrite API values in place, so the value being replaced is stashed on the book.
+// Without this, clearing an override leaves the manual value on screen until the cache expires.
+const stashPreOverride = (book, field) => {
+  if (!book._preOverride) book._preOverride = {};
+  if (field in book._preOverride) return;
+  book._preOverride[field] = { value: book[field], source: book._sources ? book._sources[field] : undefined };
+};
+
+const applyOverrideToBook = (book, override) => {
+  if (!override) return;
+  if (override.publishedYear) {
+    stashPreOverride(book, "publishedYear");
+    book.publishedYear = Number(override.publishedYear);
+    setSource(book, "publishedYear", "manual");
+  }
+  if (Array.isArray(override.genres) && override.genres.length > 0) {
+    stashPreOverride(book, "genres");
+    book.genres = normalizeGenreLabels(override.genres);
+    setSource(book, "genres", "manual");
+  }
+  if (Array.isArray(override.countries) && override.countries.length > 0) {
+    stashPreOverride(book, "countries");
+    book.countries = pickSingleCountry(override.countries);
+    setSource(book, "countries", "manual");
+  }
+  if (override.coverUrl) {
+    stashPreOverride(book, "coverUrl");
+    book.coverUrl = toDirectImageUrl(override.coverUrl);
+    setSource(book, "coverUrl", "manual");
+  }
+  if (override.seriesName) {
+    stashPreOverride(book, "seriesName");
+    book.seriesName = override.seriesName;
+    book._manualSeries = true;
+  }
+  if (override.seriesTotalBooks && Number(override.seriesTotalBooks) >= 2) {
+    book._seriesTotalBooks = Number(override.seriesTotalBooks);
+  }
+};
+
+const revertOverrideOnBook = (book) => {
+  const stash = book._preOverride;
+  if (stash) {
+    Object.keys(stash).forEach((field) => {
+      book[field] = stash[field].value;
+      if (book._sources) {
+        if (stash[field].source === undefined) delete book._sources[field];
+        else book._sources[field] = stash[field].source;
+      }
+    });
+  }
+  delete book._preOverride;
+  delete book._manualSeries;
+  delete book._seriesTotalBooks;
+};
 
 const fetchBooksMetadata = async (booksList, onProgress) => {
   const metadata = [];
@@ -1409,31 +1417,7 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
 
   // Optional manual overrides (title or ISBN key).
   metadata.forEach((book) => {
-    const override = getOverrideForBook(book);
-    if (!override) return;
-    if (override.publishedYear) {
-      book.publishedYear = override.publishedYear;
-      setSource(book, "publishedYear", "manual");
-    }
-    if (Array.isArray(override.genres) && override.genres.length > 0) {
-      book.genres = normalizeGenreLabels(override.genres);
-      setSource(book, "genres", "manual");
-    }
-    if (Array.isArray(override.countries) && override.countries.length > 0) {
-      book.countries = pickSingleCountry(override.countries);
-      setSource(book, "countries", "manual");
-    }
-    if (override.coverUrl) {
-      book.coverUrl = toDirectImageUrl(override.coverUrl);
-      setSource(book, "coverUrl", "manual");
-    }
-    if (override.seriesName) {
-      book.seriesName = override.seriesName;
-      book._manualSeries = true;
-    }
-    if (override.seriesTotalBooks && Number(override.seriesTotalBooks) >= 2) {
-      book._seriesTotalBooks = Number(override.seriesTotalBooks);
-    }
+    applyOverrideToBook(book, getOverrideForBook(book));
   });
 
   // Country is singular in dashboard (author nationality).
@@ -1504,16 +1488,12 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
       }
       if (prefixWords.length >= 2) {
         const seriesName = prefixWords.join(" ");
-        console.log(`[StatReads] Prefix-detected series: "${seriesName}" (${withoutSeries.length} books)`);
         withoutSeries.forEach((book) => { book.seriesName = seriesName; book._prefixSeries = true; });
       }
     }
   });
 
   // Series enrichment: detect full series from Google Books for books with seriesName.
-  metadata.forEach((book) => {
-    console.log(`[StatReads] Book "${book.title}" seriesName=${book.seriesName}, seriesNumber=${book.seriesNumber}`);
-  });
   const seriesMap = new Map();
   metadata.forEach((book) => {
     if (!book.seriesName) return;
@@ -1584,7 +1564,6 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
           covers,
           books: sorted,
         });
-        console.log(`[StatReads] Prefix series "${info.name}": ${info.userBooks.length} user books`);
         return;
       }
 
@@ -1617,7 +1596,6 @@ const fetchBooksMetadata = async (booksList, onProgress) => {
       }
 
       const totalBooks = bookNumbers.size > 0 ? Math.max(...bookNumbers.keys()) : 0;
-      console.log(`[StatReads] Series "${info.name}": numbers found = [${Array.from(bookNumbers.keys()).sort((a, b) => a - b).join(", ")}], total = ${totalBooks}`);
       if (totalBooks < 3) return;
 
       const userNormTitles = info.userBooks.map((b) => normalizeTitle(b.title));
@@ -1882,7 +1860,18 @@ const getPieColors = () => {
   ];
 };
 
-const draw2dPie = (canvas, rows) => {
+// Vertical squash of the top face and the height of the extruded rim. Together these
+// set how strong the perspective reads; the rim is only drawn on the front half.
+const PIE_TILT = 0.5;
+const PIE_DEPTH = 34;
+
+const shadeHex = (hex, factor) => {
+  const n = parseInt(hex.slice(1), 16);
+  const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
+  return `rgb(${clamp(((n >> 16) & 255) * factor)}, ${clamp(((n >> 8) & 255) * factor)}, ${clamp((n & 255) * factor)})`;
+};
+
+const draw3dPie = (canvas, rows) => {
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   const w = 300, h = 300;
@@ -1898,35 +1887,81 @@ const draw2dPie = (canvas, rows) => {
   if (total <= 0) return;
 
   const cc = getChartColors();
-  const cx = w / 2, cy = h / 2;
-  const r = w * 0.4;
+  const palette = getPieColors();
+  const rx = w * 0.46;
+  const ry = rx * PIE_TILT;
+  const cx = w / 2;
+  const cy = ry + (h - (2 * ry + PIE_DEPTH)) / 2;
 
-  ctx.save();
-  ctx.shadowColor = cc.isDark ? "rgba(0,0,0,0.5)" : "rgba(80,50,30,0.2)";
-  ctx.shadowBlur = 16;
-  ctx.shadowOffsetY = 6;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = cc.isDark ? "#1a3050" : "#e8dcd0";
-  ctx.fill();
-  ctx.restore();
-
+  const slices = [];
   let angle = -Math.PI / 2;
   rows.forEach((row, i) => {
     const sweep = (row.value / total) * Math.PI * 2;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, r, angle, angle + sweep);
-    ctx.closePath();
-    ctx.fillStyle = getPieColors()[i % getPieColors().length];
-    ctx.fill();
-    ctx.strokeStyle = cc.pieSep;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    slices.push({ start: angle, end: angle + sweep, color: palette[i % palette.length] });
     angle += sweep;
   });
 
-  canvas._pieData = { rows, cx, cy, r };
+  ctx.save();
+  ctx.shadowColor = cc.isDark ? "rgba(0,0,0,0.55)" : "rgba(80,50,30,0.28)";
+  ctx.shadowBlur = 22;
+  ctx.shadowOffsetY = 10;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + PIE_DEPTH, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fillStyle = cc.isDark ? "#0f2438" : "#d8c8b8";
+  ctx.fill();
+  ctx.restore();
+
+  // Rim segments, drawn only where the outer edge curves toward the viewer.
+  const STEP = Math.PI / 180;
+  const drawRim = (a0, a1, color) => {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, a0, a1);
+    ctx.lineTo(cx + rx * Math.cos(a1), cy + ry * Math.sin(a1) + PIE_DEPTH);
+    ctx.ellipse(cx, cy + PIE_DEPTH, rx, ry, 0, a1, a0, true);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, cy, 0, cy + ry + PIE_DEPTH);
+    grad.addColorStop(0, shadeHex(color, 0.75));
+    grad.addColorStop(1, shadeHex(color, 0.42));
+    ctx.fillStyle = grad;
+    ctx.fill();
+  };
+
+  slices.forEach((slice) => {
+    let runStart = null;
+    for (let a = slice.start; a < slice.end - 1e-9; a += STEP) {
+      const next = Math.min(a + STEP, slice.end);
+      const facingViewer = Math.sin((a + next) / 2) > 0;
+      if (facingViewer && runStart === null) runStart = a;
+      if (runStart !== null && (!facingViewer || next >= slice.end - 1e-9)) {
+        drawRim(runStart, facingViewer ? next : a, slice.color);
+        runStart = null;
+      }
+    }
+  });
+
+  slices.forEach((slice) => {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.ellipse(cx, cy, rx, ry, 0, slice.start, slice.end);
+    ctx.closePath();
+    ctx.fillStyle = slice.color;
+    ctx.fill();
+    ctx.strokeStyle = cc.pieSep;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  });
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+  ctx.clip();
+  const sheen = ctx.createLinearGradient(0, cy - ry, 0, cy + ry);
+  sheen.addColorStop(0, "rgba(255,255,255,0.16)");
+  sheen.addColorStop(0.55, "rgba(255,255,255,0)");
+  sheen.addColorStop(1, "rgba(0,0,0,0.08)");
+  ctx.fillStyle = sheen;
+  ctx.fillRect(cx - rx, cy - ry, rx * 2, ry * 2);
+  ctx.restore();
 };
 
 const renderThemeLegend = (container, rows, mode) => {
@@ -1975,9 +2010,9 @@ const renderThemesSection = (booksMeta) => {
   const mostReadRows = getThemeRows(booksMeta, "most-read").slice(0, 10);
   const highestRatedRows = getThemeRows(booksMeta, "highest-rated").slice(0, 10);
 
-  if (mostReadCanvas) draw2dPie(mostReadCanvas, mostReadRows);
+  if (mostReadCanvas) draw3dPie(mostReadCanvas, mostReadRows);
   renderThemeLegend(mostReadLegend, mostReadRows, "most-read");
-  if (highestRatedCanvas) draw2dPie(highestRatedCanvas, highestRatedRows);
+  if (highestRatedCanvas) draw3dPie(highestRatedCanvas, highestRatedRows);
   renderThemeLegend(highestRatedLegend, highestRatedRows, "highest-rated");
 };
 
@@ -2161,6 +2196,20 @@ if (authorsShowMore) authorsShowMore.addEventListener("click", () => {
   renderAuthorsSlice();
 });
 
+// Shared by the collections and world-map popups. These were duplicated blocks that drifted
+// apart, leaving the world-map copy rendering titles and authors unescaped.
+const renderPopupBookRow = (b) => {
+  const gFb = googleCoverFallback(b.isbn);
+  const src = b.coverUrl || gFb;
+  const cover = src
+    ? `<img src="${escapeHtml(src)}" alt="" class="wm-popup-cover" loading="lazy" referrerpolicy="no-referrer" data-cover-fallback="sibling"${b.coverUrl && gFb ? ` data-fallback="${escapeHtml(gFb)}"` : ""} /><div class="wm-popup-cover wm-popup-cover-empty" style="display:none"></div>`
+    : `<div class="wm-popup-cover wm-popup-cover-empty"></div>`;
+  const author = (b.authors && b.authors[0]) || b.authorHint || "";
+  const year = b.publishedYear || "";
+  const rating = b.userRating > 0 ? `${"★".repeat(Math.round(b.userRating))}${"☆".repeat(5 - Math.round(b.userRating))}` : "";
+  return `<div class="wm-popup-book">${cover}<div class="wm-popup-info"><div class="wm-popup-book-title">${escapeHtml(b.title || "Untitled")}</div><div class="wm-popup-book-author">${escapeHtml(author)}${year ? ` (${escapeHtml(year)})` : ""}</div>${rating ? `<div class="wm-popup-book-rating">${rating}</div>` : ""}</div></div>`;
+};
+
 const showCollectionPopup = (series) => {
   const overlay = document.getElementById("collectionPopupOverlay");
   if (!overlay) return;
@@ -2169,24 +2218,7 @@ const showCollectionPopup = (series) => {
   if (titleEl) titleEl.textContent = `${series.name} — ${series.readCount} of ${series.totalBooks} book${series.totalBooks !== 1 ? "s" : ""}`;
   if (listEl) {
     listEl.scrollTop = 0;
-    listEl.innerHTML = (series.books || []).map((b) => {
-      const gFb = b.isbn ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(b.isbn)}&printsec=frontcover&img=1&zoom=1` : "";
-      let cover;
-      if (b.coverUrl) {
-        const oe = gFb
-          ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');}" data-fallback="${gFb}"`
-          : `onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');"`;
-        cover = `<img src="${b.coverUrl}" alt="" class="wm-popup-cover" loading="lazy" referrerpolicy="no-referrer" ${oe} /><div class="wm-popup-cover wm-popup-cover-empty" style="display:none"></div>`;
-      } else if (gFb) {
-        cover = `<img src="${gFb}" alt="" class="wm-popup-cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');" /><div class="wm-popup-cover wm-popup-cover-empty" style="display:none"></div>`;
-      } else {
-        cover = `<div class="wm-popup-cover wm-popup-cover-empty"></div>`;
-      }
-      const author = (b.authors && b.authors[0]) || b.authorHint || "";
-      const year = b.publishedYear || "";
-      const rating = b.userRating > 0 ? `${"★".repeat(Math.round(b.userRating))}${"☆".repeat(5 - Math.round(b.userRating))}` : "";
-      return `<div class="wm-popup-book">${cover}<div class="wm-popup-info"><div class="wm-popup-book-title">${escapeHtml(b.title || "Untitled")}</div><div class="wm-popup-book-author">${escapeHtml(author)}${year ? ` (${year})` : ""}</div>${rating ? `<div class="wm-popup-book-rating">${rating}</div>` : ""}</div></div>`;
-    }).join("");
+    listEl.innerHTML = (series.books || []).map(renderPopupBookRow).join("");
   }
   overlay.style.display = "";
 };
@@ -2200,18 +2232,11 @@ const showCollectionPopup = (series) => {
 
 const buildCoverImg = (c) => {
   const opacity = c.read ? "1" : "0.35";
-  const src = c.url || "";
-  const gFb = c.isbn ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(c.isbn)}&printsec=frontcover&img=1&zoom=1` : "";
-  if (src) {
-    const oe = gFb
-      ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');}" data-fallback="${gFb}"`
-      : `onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');"`;
-    return `<img src="${escapeHtml(src)}" alt="" class="collection-cover" style="opacity:${opacity}" loading="lazy" referrerpolicy="no-referrer" ${oe} /><div class="collection-cover collection-cover-placeholder" style="opacity:${opacity};display:none"></div>`;
-  }
-  if (gFb) {
-    return `<img src="${gFb}" alt="" class="collection-cover" style="opacity:${opacity}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');" /><div class="collection-cover collection-cover-placeholder" style="opacity:${opacity};display:none"></div>`;
-  }
-  return `<div class="collection-cover collection-cover-placeholder" style="opacity:${opacity}"></div>`;
+  const gFb = googleCoverFallback(c.isbn);
+  const src = c.url || gFb;
+  if (!src) return `<div class="collection-cover collection-cover-placeholder" style="opacity:${opacity}"></div>`;
+  const fallbackAttr = c.url && gFb ? ` data-fallback="${escapeHtml(gFb)}"` : "";
+  return `<img src="${escapeHtml(src)}" alt="" class="collection-cover" style="opacity:${opacity}" loading="lazy" referrerpolicy="no-referrer" data-cover-fallback="sibling"${fallbackAttr} /><div class="collection-cover collection-cover-placeholder" style="opacity:${opacity};display:none"></div>`;
 };
 
 let _collectionSeriesMap = [];
@@ -2332,17 +2357,12 @@ const renderMostRead = (booksMeta) => {
     .slice(0, 36)
     .map((book) => {
       const safeTitle = escapeHtml(book.title);
-      const googleFallback = book.isbn
-        ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(book.isbn)}&printsec=frontcover&img=1&zoom=1`
-        : "";
+      const googleFallback = googleCoverFallback(book.isbn);
+      const coverSrc = book.coverUrl || googleFallback;
       let coverHtml;
-      if (book.coverUrl) {
-        const onerrorAttr = googleFallback
-          ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';}" data-fallback="${googleFallback}"`
-          : `onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';"`;
-        coverHtml = `<img src="${escapeHtml(book.coverUrl)}" alt="${safeTitle}" loading="lazy" referrerpolicy="no-referrer" ${onerrorAttr} />`;
-      } else if (googleFallback) {
-        coverHtml = `<img src="${googleFallback}" alt="${safeTitle}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';" />`;
+      if (coverSrc) {
+        const fallbackAttr = book.coverUrl && googleFallback ? ` data-fallback="${escapeHtml(googleFallback)}"` : "";
+        coverHtml = `<img src="${escapeHtml(coverSrc)}" alt="${safeTitle}" loading="lazy" referrerpolicy="no-referrer" data-cover-fallback="text" data-title="${safeTitle}"${fallbackAttr} />`;
       } else {
         coverHtml = `<div class="cover-fallback">${safeTitle}</div>`;
       }
@@ -2816,24 +2836,7 @@ const showCountryPopup = (countryName, books) => {
   if (titleEl) titleEl.textContent = `${countryName} — ${books.length} book${books.length !== 1 ? "s" : ""}`;
   if (listEl) {
     listEl.scrollTop = 0;
-    listEl.innerHTML = books.map((b) => {
-      const gFb = b.isbn ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(b.isbn)}&printsec=frontcover&img=1&zoom=1` : "";
-      let cover;
-      if (b.coverUrl) {
-        const oe = gFb
-          ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');}" data-fallback="${gFb}"`
-          : `onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');"`;
-        cover = `<img src="${b.coverUrl}" alt="" class="wm-popup-cover" loading="lazy" referrerpolicy="no-referrer" ${oe} /><div class="wm-popup-cover wm-popup-cover-empty" style="display:none"></div>`;
-      } else if (gFb) {
-        cover = `<img src="${gFb}" alt="" class="wm-popup-cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='');" /><div class="wm-popup-cover wm-popup-cover-empty" style="display:none"></div>`;
-      } else {
-        cover = `<div class="wm-popup-cover wm-popup-cover-empty"></div>`;
-      }
-      const author = (b.authors && b.authors[0]) || b.authorHint || "";
-      const year = b.publishedYear || "";
-      const rating = b.userRating > 0 ? `${"★".repeat(Math.round(b.userRating))}${"☆".repeat(5 - Math.round(b.userRating))}` : "";
-      return `<div class="wm-popup-book">${cover}<div class="wm-popup-info"><div class="wm-popup-book-title">${b.title || "Untitled"}</div><div class="wm-popup-book-author">${author}${year ? ` (${year})` : ""}</div>${rating ? `<div class="wm-popup-book-rating">${rating}</div>` : ""}</div></div>`;
-    }).join("");
+    listEl.innerHTML = books.map(renderPopupBookRow).join("");
   }
   overlay.style.display = "";
 };
@@ -3101,30 +3104,17 @@ const applyRuntimeOverridesToCurrentBooks = () => {
   latestBooksMeta.forEach((book) => {
     const key = keyForBook(book);
     const override = runtimeOverrides[key] || runtimeOverrides[book.title] || (book.isbn && runtimeOverrides[book.isbn]);
-    if (!override) return;
-    if (override.publishedYear) {
-      book.publishedYear = Number(override.publishedYear);
-      setSource(book, "publishedYear", "manual");
-    }
-    if (Array.isArray(override.genres) && override.genres.length > 0) {
-      book.genres = normalizeGenreLabels(override.genres);
-      setSource(book, "genres", "manual");
-    }
-    if (Array.isArray(override.countries) && override.countries.length > 0) {
-      book.countries = pickSingleCountry(override.countries);
-      setSource(book, "countries", "manual");
-    }
-    if (override.coverUrl) {
-      book.coverUrl = toDirectImageUrl(override.coverUrl);
-      setSource(book, "coverUrl", "manual");
-    }
-    if (override.seriesName) {
-      book.seriesName = override.seriesName;
-      book._manualSeries = true;
-    }
-    if (override.seriesTotalBooks && Number(override.seriesTotalBooks) >= 2) {
-      book._seriesTotalBooks = Number(override.seriesTotalBooks);
-    }
+    applyOverrideToBook(book, override);
+  });
+};
+
+// Restores the API values a now-deleted override had replaced, then re-applies whatever
+// override still stands (a shared override may sit underneath a removed local one).
+const revertOverrideForKey = (key) => {
+  latestBooksMeta.forEach((book) => {
+    if (keyForBook(book) !== key && book.title !== key && book.isbn !== key) return;
+    revertOverrideOnBook(book);
+    applyOverrideToBook(book, getOverrideForBook(book));
   });
 };
 
@@ -3219,12 +3209,23 @@ const rerenderFromCurrentMetadata = () => {
 };
 
 runtimeOverrides = readOverridesFromStorage();
-loadSharedOverrides().then((data) => { sharedOverrides = data.books; sharedAuthorOverrides = data.authors; });
+// Awaited before enrichment so a slow fetch can't let the first render miss the curated corrections.
+const sharedOverridesReady = loadSharedOverrides().then((data) => {
+  sharedOverrides = data.books;
+  sharedAuthorOverrides = data.authors;
+});
+
+// Shared by both decade sections, which were byte-identical duplicates of this markup.
+const renderDecadeCoverCard = (book) => {
+  const safeTitle = escapeHtml(book.title);
+  const gFb = googleCoverFallback(book.isbn);
+  const src = book.coverUrl || gFb;
+  if (!src) return `<div class="cover-card" title="${safeTitle}"><div class="cover-fallback">${safeTitle}</div></div>`;
+  const fallbackAttr = book.coverUrl && gFb ? ` data-fallback="${escapeHtml(gFb)}"` : "";
+  return `<div class="cover-card" title="${safeTitle}"><img src="${escapeHtml(src)}" alt="${safeTitle} cover" loading="lazy" referrerpolicy="no-referrer" data-cover-fallback="text" data-title="${safeTitle}"${fallbackAttr} /></div>`;
+};
 
 const renderDecadesSection = (booksMeta) => {
-  booksMeta.forEach((book) => {
-    console.log(`[StatReads] Decade check: "${book.title}" publishedYear=${book.publishedYear} userRating=${book.userRating}`);
-  });
   const groups = new Map();
   booksMeta.forEach((book) => {
     if (!book.publishedYear) return;
@@ -3260,22 +3261,7 @@ const renderDecadesSection = (booksMeta) => {
       const covers = entry.books
         .sort((a, b) => (a.publishedYear || 9999) - (b.publishedYear || 9999))
         .slice(0, 20)
-        .map((book) => {
-          const safeTitle = escapeHtml(book.title);
-          const googleFallback = book.isbn
-            ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(book.isbn)}&printsec=frontcover&img=1&zoom=1`
-            : "";
-          if (book.coverUrl) {
-            const onerrorAttr = googleFallback
-              ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';}" data-fallback="${googleFallback}"`
-              : `onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';"`;
-            return `<div class="cover-card" title="${safeTitle}"><img src="${book.coverUrl}" alt="${safeTitle} cover" loading="lazy" referrerpolicy="no-referrer" ${onerrorAttr} /></div>`;
-          }
-          if (googleFallback) {
-            return `<div class="cover-card" title="${safeTitle}"><img src="${googleFallback}" alt="${safeTitle} cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';" /></div>`;
-          }
-          return `<div class="cover-card" title="${safeTitle}"><div class="cover-fallback">${safeTitle}</div></div>`;
-        })
+        .map(renderDecadeCoverCard)
         .join("");
 
       return `
@@ -3316,22 +3302,7 @@ const renderMostReadDecades = (booksMeta) => {
       const covers = entry.books
         .sort((a, b) => (a.publishedYear || 9999) - (b.publishedYear || 9999))
         .slice(0, 20)
-        .map((book) => {
-          const safeTitle = escapeHtml(book.title);
-          const googleFallback = book.isbn
-            ? `https://books.google.com/books/content?vid=ISBN${encodeURIComponent(book.isbn)}&printsec=frontcover&img=1&zoom=1`
-            : "";
-          if (book.coverUrl) {
-            const onerrorAttr = googleFallback
-              ? `onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';}" data-fallback="${googleFallback}"`
-              : `onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';"`;
-            return `<div class="cover-card" title="${safeTitle}"><img src="${book.coverUrl}" alt="${safeTitle} cover" loading="lazy" referrerpolicy="no-referrer" ${onerrorAttr} /></div>`;
-          }
-          if (googleFallback) {
-            return `<div class="cover-card" title="${safeTitle}"><img src="${googleFallback}" alt="${safeTitle} cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.parentElement.innerHTML='<div class=\\'cover-fallback\\'>${safeTitle}</div>';" /></div>`;
-          }
-          return `<div class="cover-card" title="${safeTitle}"><div class="cover-fallback">${safeTitle}</div></div>`;
-        })
+        .map(renderDecadeCoverCard)
         .join("");
 
       return `
@@ -3417,6 +3388,7 @@ confirmUploadButton.addEventListener("click", async () => {
   confirmError.textContent = "";
 
   try {
+    await sharedOverridesReady;
     const csvText = await selectedFile.text();
     const { headers, dataRows } = parseCsv(csvText);
     const source = detectSource(headers);
@@ -3587,6 +3559,14 @@ overrideEditor.addEventListener("submit", (event) => {
 const GITHUB_REPO = "atandritC/StatReads";
 const PENDING_OVERRIDES_KEY = "statreads_pending_overrides";
 
+// Email fallback for contributors without a GitHub account. Web3Forms relays the submission
+// from its own servers to the maintainer's inbox, so the destination address never appears
+// here and the contributor's own mail client is never involved.
+const EMAIL_RELAY_ENDPOINT = "https://api.web3forms.com/submit";
+const EMAIL_RELAY_ACCESS_KEY = "0ebc7265-c2f0-4506-b69e-ec07c198ad1b";
+const isEmailRelayConfigured = () =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(EMAIL_RELAY_ACCESS_KEY);
+
 const loadPendingOverrides = () => {
   try { return JSON.parse(localStorage.getItem(PENDING_OVERRIDES_KEY)) || { books: {}, authors: {} }; }
   catch { return { books: {}, authors: {} }; }
@@ -3654,7 +3634,7 @@ submitOverrideBtn.addEventListener("click", () => {
   savePendingOverrides(pending);
   updateSubmitAllBtnVisibility();
   updatePendingBtnState(key);
-  alert(`"${key}" added to pending submissions (${getPendingCount()} total).\nClick "Submit All to Community" in the Metadata section to open one GitHub issue.`);
+  alert(`"${key}" added to pending submissions (${getPendingCount()} total).\nClick "Submit All to Community" in the Metadata section to send them as a GitHub issue or by email.`);
 });
 
 if (deleteFromPendingBtn) {
@@ -3674,6 +3654,7 @@ clearOverrideBtn.addEventListener("click", () => {
   if (!key) return;
   delete runtimeOverrides[key];
   persistOverridesToStorage();
+  revertOverrideForKey(key);
   rerenderFromCurrentMetadata();
   closeOverrideEditor();
 });
@@ -3694,40 +3675,289 @@ exportOverridesBtn.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
+// sanitizeText drops newlines, which would run the lines of a multi-line note together.
+const sanitizeMultilineText = (value, maxLen) =>
+  String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => sanitizeText(line, maxLen))
+    .join("\n")
+    .trim()
+    .slice(0, maxLen);
+
+const buildOverrideSubmission = (pending) => {
+  const bookCount = Object.keys(pending.books).length;
+  const authorCount = Object.keys(pending.authors).length;
+  const total = bookCount + authorCount;
+  const sections = [];
+  if (bookCount > 0) {
+    sections.push(`### Book Overrides (${bookCount})\n\n\`\`\`json\n${JSON.stringify(pending.books, null, 2)}\n\`\`\``);
+  }
+  if (authorCount > 0) {
+    sections.push(`### Author Overrides (${authorCount})\n\n\`\`\`json\n${JSON.stringify(pending.authors, null, 2)}\n\`\`\``);
+  }
+  return {
+    total,
+    bookCount,
+    authorCount,
+    title: `[Batch Override] ${total} item${total > 1 ? "s" : ""}`,
+    sections,
+    json: JSON.stringify(pending, null, 2),
+  };
+};
+
 const submitAllOverridesBtn = document.getElementById("submitAllOverridesBtn");
+const submitChoiceOverlay = document.getElementById("submitChoiceOverlay");
+const submitChoiceClose = document.getElementById("submitChoiceClose");
+const submitChoiceSummary = document.getElementById("submitChoiceSummary");
+const submitChoiceOptions = document.getElementById("submitChoiceOptions");
+const submitChoiceStatus = document.getElementById("submitChoiceStatus");
+const submitViaGithubBtn = document.getElementById("submitViaGithubBtn");
+const submitViaEmailBtn = document.getElementById("submitViaEmailBtn");
+const submitEmailForm = document.getElementById("submitEmailForm");
+const submitEmailName = document.getElementById("submitEmailName");
+const submitEmailReply = document.getElementById("submitEmailReply");
+const submitEmailNote = document.getElementById("submitEmailNote");
+const submitEmailBotcheck = document.getElementById("submitEmailBotcheck");
+const submitEmailSend = document.getElementById("submitEmailSend");
+const submitEmailBack = document.getElementById("submitEmailBack");
+const submitGithubConfirm = document.getElementById("submitGithubConfirm");
+const submitGithubDone = document.getElementById("submitGithubDone");
+const submitGithubKeep = document.getElementById("submitGithubKeep");
+const submitFallback = document.getElementById("submitFallback");
+const submitFallbackText = document.getElementById("submitFallbackText");
+const submitCopyJsonBtn = document.getElementById("submitCopyJsonBtn");
+const submitDownloadJsonBtn = document.getElementById("submitDownloadJsonBtn");
+const submitFallbackBack = document.getElementById("submitFallbackBack");
+
+let activeSubmission = null;
+
+const setSubmitChoiceStatus = (message, variant) => {
+  if (!submitChoiceStatus) return;
+  submitChoiceStatus.textContent = message || "";
+  submitChoiceStatus.className = "submit-choice-status" + (variant ? ` is-${variant}` : "");
+  submitChoiceStatus.style.display = message ? "" : "none";
+};
+
+// Steps: "choose" | "email" | "github" | "fallback" | "done" ("done" shows only the status line).
+const showSubmitChoiceStep = (step) => {
+  if (submitChoiceOptions) submitChoiceOptions.style.display = step === "choose" ? "" : "none";
+  if (submitEmailForm) submitEmailForm.style.display = step === "email" ? "" : "none";
+  if (submitGithubConfirm) submitGithubConfirm.style.display = step === "github" ? "" : "none";
+  if (submitFallback) submitFallback.style.display = step === "fallback" ? "" : "none";
+};
+
+const closeSubmitChoice = () => {
+  if (submitChoiceOverlay) submitChoiceOverlay.style.display = "none";
+  activeSubmission = null;
+};
+
+const clearPendingAfterSubmit = () => {
+  savePendingOverrides({ books: {}, authors: {} });
+  updateSubmitAllBtnVisibility();
+};
+
+const openSubmitChoice = () => {
+  const pending = loadPendingOverrides();
+  const submission = buildOverrideSubmission(pending);
+  if (submission.total === 0) {
+    alert("No pending overrides to submit.");
+    return;
+  }
+  activeSubmission = submission;
+
+  const parts = [];
+  if (submission.bookCount > 0) parts.push(`${submission.bookCount} book${submission.bookCount > 1 ? "s" : ""}`);
+  if (submission.authorCount > 0) parts.push(`${submission.authorCount} author${submission.authorCount > 1 ? "s" : ""}`);
+  if (submitChoiceSummary) {
+    submitChoiceSummary.textContent = `Ready to send ${parts.join(" and ")}. Choose how you'd like to submit — both routes reach the same place.`;
+  }
+
+  setSubmitChoiceStatus("");
+  showSubmitChoiceStep("choose");
+  if (submitEmailSend) {
+    submitEmailSend.disabled = false;
+    submitEmailSend.textContent = "Send Overrides";
+  }
+  if (submitChoiceOverlay) submitChoiceOverlay.style.display = "";
+};
+
+const showManualFallback = (message) => {
+  if (submitFallbackText) submitFallbackText.textContent = message;
+  showSubmitChoiceStep("fallback");
+};
+
 if (submitAllOverridesBtn) {
-  submitAllOverridesBtn.addEventListener("click", () => {
-    const pending = loadPendingOverrides();
-    const bookCount = Object.keys(pending.books).length;
-    const authorCount = Object.keys(pending.authors).length;
-    const total = bookCount + authorCount;
-    if (total === 0) {
-      alert("No pending overrides to submit.");
+  submitAllOverridesBtn.addEventListener("click", openSubmitChoice);
+  updateSubmitAllBtnVisibility();
+}
+
+// GitHub rejects issue URLs beyond roughly 8 KB, so batches past this fall back to the JSON panel.
+const GITHUB_URL_MAX_LENGTH = 7500;
+
+if (submitViaGithubBtn) {
+  submitViaGithubBtn.addEventListener("click", () => {
+    if (!activeSubmission) return;
+    const sections = [...activeSubmission.sections, "### Why\n_Briefly describe what was wrong or missing._"];
+    const title = encodeURIComponent(activeSubmission.title);
+    const body = encodeURIComponent(sections.join("\n\n"));
+    const issueUrl = `https://github.com/${GITHUB_REPO}/issues/new?title=${title}&body=${body}&labels=override`;
+
+    if (issueUrl.length > GITHUB_URL_MAX_LENGTH) {
+      setSubmitChoiceStatus("");
+      showManualFallback(
+        "This batch is too large to pre-fill a GitHub issue. Copy or download the JSON below and paste it into a new issue, or send it by email instead."
+      );
       return;
     }
 
-    const sections = [];
-    if (bookCount > 0) {
-      sections.push(`### Book Overrides (${bookCount})\n\n\`\`\`json\n${JSON.stringify(pending.books, null, 2)}\n\`\`\``);
+    const opened = window.open(issueUrl, "_blank");
+    if (!opened) {
+      setSubmitChoiceStatus("");
+      showManualFallback(
+        "Your browser blocked the new tab. Allow pop-ups for this site and try again, or copy the JSON below and open an issue yourself."
+      );
+      return;
     }
-    if (authorCount > 0) {
-      sections.push(`### Author Overrides (${authorCount})\n\n\`\`\`json\n${JSON.stringify(pending.authors, null, 2)}\n\`\`\``);
-    }
-    sections.push("### Why\n_Briefly describe what was wrong or missing._");
-
-    const title = encodeURIComponent(`[Batch Override] ${total} item${total > 1 ? "s" : ""}`);
-    const body = encodeURIComponent(sections.join("\n\n"));
-    window.open(
-      `https://github.com/${GITHUB_REPO}/issues/new?title=${title}&body=${body}&labels=override`,
-      "_blank"
-    );
-
-    savePendingOverrides({ books: {}, authors: {} });
-    updateSubmitAllBtnVisibility();
+    // The queue is deliberately left intact: we cannot see whether the issue was actually filed.
+    setSubmitChoiceStatus("");
+    showSubmitChoiceStep("github");
   });
-
-  updateSubmitAllBtnVisibility();
 }
+
+if (submitGithubDone) {
+  submitGithubDone.addEventListener("click", () => {
+    clearPendingAfterSubmit();
+    showSubmitChoiceStep("done");
+    setSubmitChoiceStatus("Thank you. Your pending queue is now clear.", "success");
+    setTimeout(closeSubmitChoice, 2200);
+  });
+}
+
+if (submitGithubKeep) {
+  submitGithubKeep.addEventListener("click", closeSubmitChoice);
+}
+
+if (submitViaEmailBtn) {
+  submitViaEmailBtn.addEventListener("click", () => {
+    if (!activeSubmission) return;
+    if (!isEmailRelayConfigured()) {
+      showManualFallback(
+        "Email submission isn't set up on this deployment yet. Copy or download the JSON below and it can be attached to an issue or sent along by any other route."
+      );
+      return;
+    }
+    setSubmitChoiceStatus("");
+    showSubmitChoiceStep("email");
+    submitEmailName?.focus();
+  });
+}
+
+const returnToChoices = () => {
+  setSubmitChoiceStatus("");
+  showSubmitChoiceStep("choose");
+};
+
+if (submitEmailBack) submitEmailBack.addEventListener("click", returnToChoices);
+if (submitFallbackBack) submitFallbackBack.addEventListener("click", returnToChoices);
+
+if (submitEmailForm) {
+  submitEmailForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!activeSubmission) return;
+
+    const credit = sanitizeText(submitEmailName?.value || "", 80);
+    const replyTo = (submitEmailReply?.value || "").trim();
+    const note = sanitizeMultilineText(submitEmailNote?.value || "", 1000);
+
+    const bodyParts = [...activeSubmission.sections];
+    bodyParts.push(`### Why\n${note || "_No description provided._"}`);
+    bodyParts.push(`### Submitted by\n${credit || "Anonymous contributor"}${replyTo ? ` (${replyTo})` : " (no reply address given)"}`);
+
+    const payload = {
+      access_key: EMAIL_RELAY_ACCESS_KEY,
+      subject: `${activeSubmission.title} — StatReads community override`,
+      from_name: "StatReads Overrides",
+      botcheck: submitEmailBotcheck?.checked ? "on" : "",
+      contributor: credit || "Anonymous contributor",
+      message: bodyParts.join("\n\n"),
+    };
+    // Web3Forms uses `email` only to set the reply-to header, so omit it when left blank.
+    if (replyTo) payload.email = replyTo;
+
+    if (submitEmailSend) {
+      submitEmailSend.disabled = true;
+      submitEmailSend.textContent = "Sending…";
+    }
+    setSubmitChoiceStatus("Sending your overrides…");
+
+    try {
+      const response = await fetch(EMAIL_RELAY_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.success === false) {
+        throw new Error(result.message || `Relay responded with ${response.status}`);
+      }
+      clearPendingAfterSubmit();
+      showSubmitChoiceStep("done");
+      setSubmitChoiceStatus(
+        "Sent, thank you. Your overrides are on their way for review and nothing was sent from your own email account.",
+        "success"
+      );
+      setTimeout(closeSubmitChoice, 3200);
+    } catch (error) {
+      if (submitEmailSend) {
+        submitEmailSend.disabled = false;
+        submitEmailSend.textContent = "Send Overrides";
+      }
+      setSubmitChoiceStatus(`Couldn't send the email (${error.message}). Your overrides are still pending, so nothing is lost.`, "error");
+      showManualFallback(
+        "You can retry in a moment, open a GitHub issue instead, or keep a copy of the JSON below and send it whenever suits you."
+      );
+    }
+  });
+}
+
+if (submitCopyJsonBtn) {
+  submitCopyJsonBtn.addEventListener("click", async () => {
+    if (!activeSubmission) return;
+    try {
+      await navigator.clipboard.writeText(activeSubmission.json);
+      setSubmitChoiceStatus("Copied to your clipboard.", "success");
+    } catch {
+      setSubmitChoiceStatus("Clipboard access was blocked — use Download JSON instead.", "error");
+    }
+  });
+}
+
+if (submitDownloadJsonBtn) {
+  submitDownloadJsonBtn.addEventListener("click", () => {
+    if (!activeSubmission) return;
+    const blob = new Blob([activeSubmission.json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "statreads-pending-overrides.json";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setSubmitChoiceStatus("Downloaded as statreads-pending-overrides.json.", "success");
+  });
+}
+
+if (submitChoiceClose) submitChoiceClose.addEventListener("click", closeSubmitChoice);
+if (submitChoiceOverlay) {
+  submitChoiceOverlay.addEventListener("click", (e) => {
+    if (e.target === submitChoiceOverlay) closeSubmitChoice();
+  });
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && submitChoiceOverlay?.style.display !== "none") closeSubmitChoice();
+});
 
 // Author photo override popup wiring.
 const authorPhotoOverlay = document.getElementById("authorPhotoOverlay");
@@ -3827,7 +4057,7 @@ if (authorPopupSubmit) {
     savePendingOverrides(pending);
     updateSubmitAllBtnVisibility();
     updateAuthorPendingBtnState(name);
-    alert(`Author "${name}" added to pending submissions (${getPendingCount()} total).\nClick "Submit All to Community" in the Metadata section to open one GitHub issue.`);
+    alert(`Author "${name}" added to pending submissions (${getPendingCount()} total).\nClick "Submit All to Community" in the Metadata section to send them as a GitHub issue or by email.`);
   });
 }
 
@@ -3873,7 +4103,6 @@ if (authorPhotoOverlay) {
 
 /* ── Re-render all charts on theme change ─────────── */
 function refreshChartsForTheme() {
-  if (typeof drawHeroBars === "function") drawHeroBars();
   if (!latestBooksMeta || latestBooksMeta.length === 0) return;
   setYearTab(currentYearMode);
   setTaxonomyTab(currentTaxonomyMode);
@@ -3923,166 +4152,4 @@ function refreshChartsForTheme() {
     }
   });
 })();
-
-/* ── Hero wave graphs ─────────────────────────────── */
-const HERO_W = 300, HERO_H = 180;
-let heroAnimFrame = null;
-let heroAnimT = 0;
-let heroAnimating = false;
-
-const heroWaves = { left: [], right: [] };
-
-function getWaveStyles() {
-  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
-  if (isDark) {
-    return [
-      { stroke: "rgba(255,241,231,0.30)", fill: "rgba(255,241,231,0.04)", width: 1.8 },
-      { stroke: "rgba(255,241,231,0.22)", fill: "rgba(255,241,231,0.03)", width: 1.5 },
-      { stroke: "rgba(255,241,231,0.18)", fill: "rgba(255,241,231,0.025)",width: 1.5 },
-      { stroke: "rgba(255,241,231,0.14)", fill: "rgba(255,241,231,0.02)", width: 1.2 },
-      { stroke: "rgba(255,241,231,0.10)", fill: "rgba(255,241,231,0.015)",width: 1.0 },
-    ];
-  }
-  return [
-    { stroke: "rgba(50,96,128,0.22)",  fill: "rgba(50,96,128,0.03)",  width: 1.8 },
-    { stroke: "rgba(128,82,50,0.18)",  fill: "rgba(128,82,50,0.025)", width: 1.5 },
-    { stroke: "rgba(50,96,128,0.15)",  fill: "rgba(50,96,128,0.02)",  width: 1.5 },
-    { stroke: "rgba(128,82,50,0.12)",  fill: "rgba(128,82,50,0.015)", width: 1.2 },
-    { stroke: "rgba(50,96,128,0.09)",  fill: "rgba(50,96,128,0.01)",  width: 1.0 },
-  ];
-}
-
-function initHeroWaves() {
-  ["left", "right"].forEach((side) => {
-    heroWaves[side] = [];
-    for (let l = 0; l < 5; l++) {
-      const centerY = HERO_H * (0.25 + l * 0.12) + (Math.random() - 0.5) * 20;
-      heroWaves[side].push({
-        centerY,
-        amp: 12 + Math.random() * 22,
-        freq: 1.2 + Math.random() * 1.0,
-        phase: Math.random() * Math.PI * 2,
-        drift: 0.4 + Math.random() * 0.8,
-      });
-    }
-  });
-}
-
-function buildWavePath(ctx, wave, t) {
-  const steps = 60;
-  const pts = [];
-  for (let i = 0; i <= steps; i++) {
-    const norm = i / steps;
-    const x = norm * HERO_W;
-    const animOff = heroAnimating ? Math.sin(t * wave.drift + norm * 3) * 6 : 0;
-    const y = wave.centerY
-      + Math.sin(norm * Math.PI * wave.freq + wave.phase + t * wave.drift) * wave.amp
-      + animOff;
-    pts.push({ x, y: Math.max(4, Math.min(HERO_H - 4, y)) });
-  }
-  ctx.beginPath();
-  ctx.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) {
-    const prev = pts[i - 1];
-    const cur = pts[i];
-    const cpx = (prev.x + cur.x) / 2;
-    ctx.bezierCurveTo(cpx, prev.y, cpx, cur.y, cur.x, cur.y);
-  }
-  return pts;
-}
-
-function drawHeroBars() {
-  const styles = getWaveStyles();
-
-  ["Left", "Right"].forEach((side) => {
-    const canvas = document.getElementById("heroLine" + side);
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = HERO_W * dpr;
-    canvas.height = HERO_H * dpr;
-    canvas.style.width = HERO_W + "px";
-    canvas.style.height = HERO_H + "px";
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, HERO_W, HERO_H);
-
-    const waves = heroWaves[side.toLowerCase()];
-    waves.forEach((wave, i) => {
-      const s = styles[i % styles.length];
-
-      buildWavePath(ctx, wave, heroAnimT);
-
-      ctx.strokeStyle = s.stroke;
-      ctx.lineWidth = s.width;
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.stroke();
-
-      ctx.lineTo(HERO_W, HERO_H);
-      ctx.lineTo(0, HERO_H);
-      ctx.closePath();
-      ctx.fillStyle = s.fill;
-      ctx.fill();
-    });
-
-    const outerFade = HERO_W * 0.3;
-    const innerFade = HERO_W * 0.2;
-    ctx.save();
-    ctx.globalCompositeOperation = "destination-out";
-    if (side === "Left") {
-      const gOuter = ctx.createLinearGradient(0, 0, outerFade, 0);
-      gOuter.addColorStop(0, "rgba(0,0,0,1)");
-      gOuter.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = gOuter;
-      ctx.fillRect(0, 0, outerFade, HERO_H);
-
-      const gInner = ctx.createLinearGradient(HERO_W - innerFade, 0, HERO_W, 0);
-      gInner.addColorStop(0, "rgba(0,0,0,0)");
-      gInner.addColorStop(1, "rgba(0,0,0,1)");
-      ctx.fillStyle = gInner;
-      ctx.fillRect(HERO_W - innerFade, 0, innerFade, HERO_H);
-    } else {
-      const gOuter = ctx.createLinearGradient(HERO_W - outerFade, 0, HERO_W, 0);
-      gOuter.addColorStop(0, "rgba(0,0,0,0)");
-      gOuter.addColorStop(1, "rgba(0,0,0,1)");
-      ctx.fillStyle = gOuter;
-      ctx.fillRect(HERO_W - outerFade, 0, outerFade, HERO_H);
-
-      const gInner = ctx.createLinearGradient(0, 0, innerFade, 0);
-      gInner.addColorStop(0, "rgba(0,0,0,1)");
-      gInner.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = gInner;
-      ctx.fillRect(0, 0, innerFade, HERO_H);
-    }
-    ctx.restore();
-  });
-}
-
-function heroAnimLoop() {
-  heroAnimT += 0.02;
-  drawHeroBars();
-  if (heroAnimating) {
-    heroAnimFrame = requestAnimationFrame(heroAnimLoop);
-  }
-}
-
-initHeroWaves();
-drawHeroBars();
-
-const heroEl = document.querySelector(".dashboard-hero");
-if (heroEl) {
-  heroEl.addEventListener("mouseenter", () => {
-    heroAnimating = true;
-    if (!heroAnimFrame) heroAnimLoop();
-  });
-  heroEl.addEventListener("mouseleave", () => {
-    heroAnimating = false;
-    if (heroAnimFrame) {
-      cancelAnimationFrame(heroAnimFrame);
-      heroAnimFrame = null;
-    }
-    heroAnimT = 0;
-    drawHeroBars();
-  });
-}
 
