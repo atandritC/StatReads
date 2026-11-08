@@ -708,6 +708,7 @@ body {
 
 .taxonomy-section,
 .themes-section,
+.mood-section,
 .collections-section {
   width: min(1180px, calc(100% - 32px));
   margin: 20px auto 48px;
@@ -832,7 +833,6 @@ body {
   flex-shrink: 0;
 }
 
-.mood-section { margin-top: 28px; }
 .mood-graph-wrap {
   margin: 18px auto 0;
   width: min(100%, 960px);

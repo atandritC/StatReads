@@ -1957,7 +1957,7 @@ const renderMoodGraph = (booksMeta) => {
   draw();
   canvas.onmouseenter = () => {
     const started = performance.now();
-    const duration = 2300;
+    const duration = 6000;
     const animate = (now) => {
       const t = Math.min(1, (now - started) / duration);
       draw(1 - Math.pow(1 - t, 3));
