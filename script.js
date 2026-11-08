@@ -1860,108 +1860,112 @@ const getPieColors = () => {
   ];
 };
 
-// Vertical squash of the top face and the height of the extruded rim. Together these
-// set how strong the perspective reads; the rim is only drawn on the front half.
-const PIE_TILT = 0.5;
-const PIE_DEPTH = 34;
-
-const shadeHex = (hex, factor) => {
-  const n = parseInt(hex.slice(1), 16);
-  const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
-  return `rgb(${clamp(((n >> 16) & 255) * factor)}, ${clamp(((n >> 8) & 255) * factor)}, ${clamp((n & 255) * factor)})`;
-};
-
 const draw3dPie = (canvas, rows) => {
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
-  const w = 300, h = 300;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
-  canvas.style.width = w + "px";
-  canvas.style.height = h + "px";
+  const size = 300;
+  canvas.width = size * dpr;
+  canvas.height = size * dpr;
+  canvas.style.width = size + "px";
+  canvas.style.height = size + "px";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-
-  if (!rows || rows.length === 0) return;
-  const total = rows.reduce((s, r) => s + r.value, 0);
+  ctx.clearRect(0, 0, size, size);
+  if (!rows || !rows.length) return;
+  const total = rows.reduce((sum, row) => sum + row.value, 0);
   if (total <= 0) return;
-
+  const colors = getPieColors();
   const cc = getChartColors();
-  const palette = getPieColors();
-  const rx = w * 0.46;
-  const ry = rx * PIE_TILT;
-  const cx = w / 2;
-  const cy = ry + (h - (2 * ry + PIE_DEPTH)) / 2;
-
-  const slices = [];
+  const cx = size / 2, cy = size / 2, radius = 136, inner = 91;
   let angle = -Math.PI / 2;
-  rows.forEach((row, i) => {
-    const sweep = (row.value / total) * Math.PI * 2;
-    slices.push({ start: angle, end: angle + sweep, color: palette[i % palette.length] });
-    angle += sweep;
-  });
-
-  ctx.save();
-  ctx.shadowColor = cc.isDark ? "rgba(0,0,0,0.55)" : "rgba(80,50,30,0.28)";
-  ctx.shadowBlur = 22;
-  ctx.shadowOffsetY = 10;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy + PIE_DEPTH, rx, ry, 0, 0, Math.PI * 2);
-  ctx.fillStyle = cc.isDark ? "#0f2438" : "#d8c8b8";
-  ctx.fill();
-  ctx.restore();
-
-  // Rim segments, drawn only where the outer edge curves toward the viewer.
-  const STEP = Math.PI / 180;
-  const drawRim = (a0, a1, color) => {
+  rows.forEach((row, index) => {
+    const end = angle + row.value / total * Math.PI * 2;
     ctx.beginPath();
-    ctx.ellipse(cx, cy, rx, ry, 0, a0, a1);
-    ctx.lineTo(cx + rx * Math.cos(a1), cy + ry * Math.sin(a1) + PIE_DEPTH);
-    ctx.ellipse(cx, cy + PIE_DEPTH, rx, ry, 0, a1, a0, true);
+    ctx.arc(cx, cy, radius, angle, end);
+    ctx.arc(cx, cy, inner, end, angle, true);
     ctx.closePath();
-    const grad = ctx.createLinearGradient(0, cy, 0, cy + ry + PIE_DEPTH);
-    grad.addColorStop(0, shadeHex(color, 0.75));
-    grad.addColorStop(1, shadeHex(color, 0.42));
-    ctx.fillStyle = grad;
-    ctx.fill();
-  };
-
-  slices.forEach((slice) => {
-    let runStart = null;
-    for (let a = slice.start; a < slice.end - 1e-9; a += STEP) {
-      const next = Math.min(a + STEP, slice.end);
-      const facingViewer = Math.sin((a + next) / 2) > 0;
-      if (facingViewer && runStart === null) runStart = a;
-      if (runStart !== null && (!facingViewer || next >= slice.end - 1e-9)) {
-        drawRim(runStart, facingViewer ? next : a, slice.color);
-        runStart = null;
-      }
-    }
-  });
-
-  slices.forEach((slice) => {
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.ellipse(cx, cy, rx, ry, 0, slice.start, slice.end);
-    ctx.closePath();
-    ctx.fillStyle = slice.color;
+    ctx.fillStyle = colors[index % colors.length];
     ctx.fill();
     ctx.strokeStyle = cc.pieSep;
-    ctx.lineWidth = 1.2;
+    ctx.lineWidth = 2;
     ctx.stroke();
+    angle = end;
   });
+};
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-  ctx.clip();
-  const sheen = ctx.createLinearGradient(0, cy - ry, 0, cy + ry);
-  sheen.addColorStop(0, "rgba(255,255,255,0.16)");
-  sheen.addColorStop(0.55, "rgba(255,255,255,0)");
-  sheen.addColorStop(1, "rgba(0,0,0,0.08)");
-  ctx.fillStyle = sheen;
-  ctx.fillRect(cx - rx, cy - ry, rx * 2, ry * 2);
-  ctx.restore();
+const moodScoreForBook = (book) => {
+  const text = [book.title, ...(book.rawSubjects || []), ...(book.genres || []), book.review, book.description]
+    .filter(Boolean).join(" ").toLowerCase();
+  const light = /\b(comedy|humou?r|funny|light.?hearted|romance|joy|happy|whimsical|adventure|hopeful|friendship|feel.?good)\b/g;
+  const dark = /\b(horror|fear|trauma|war|death|tragedy|dark|heavy|grief|dystopia|crime|murder|虐|悲劇)\b/g;
+  const count = (pattern) => (text.match(pattern) || []).length;
+  const balance = count(light) - count(dark);
+  return Math.max(-1, Math.min(1, balance / 2));
+};
+
+const moodColor = (score) => {
+  const t = Math.max(0, Math.min(1, (score + 1) / 2));
+  const mix = (a, b, amount) => Math.round(a + (b - a) * amount);
+  const low = [78, 43, 67], high = [237, 195, 91];
+  const rgb = low.map((value, i) => mix(value, high[i], t));
+  return `rgb(${rgb.join(",")})`;
+};
+
+const renderMoodGraph = (booksMeta) => {
+  const canvas = document.getElementById("moodGraph");
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(320, Math.min(960, canvas.parentElement.clientWidth || 700));
+  const height = 210;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.width = "100%";
+  canvas.style.height = height + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const books = (booksMeta || []).filter((book) => book && (book.rawSubjects?.length || book.genres?.length || book.title));
+  const scores = books.slice(0, 80).map(moodScoreForBook);
+  if (scores.length < 2) {
+    ctx.clearRect(0, 0, width, height);
+    return;
+  }
+  const points = scores.map((score, i) => ({
+    x: 18 + i * (width - 36) / (scores.length - 1),
+    y: height / 2 - score * (height * 0.36) + Math.sin(i * 1.7) * 8,
+    score,
+  }));
+  const draw = (progress = 1) => {
+    ctx.clearRect(0, 0, width, height);
+    const visible = Math.max(2, Math.ceil((points.length - 1) * progress) + 1);
+    for (let i = 0; i < visible - 1; i++) {
+      const a = points[i], b = points[i + 1];
+      const endX = i === visible - 2 && progress < 1
+        ? a.x + (b.x - a.x) * (((points.length - 1) * progress) % 1 || 1)
+        : b.x;
+      const endY = i === visible - 2 && progress < 1
+        ? a.y + (b.y - a.y) * ((endX - a.x) / (b.x - a.x))
+        : b.y;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.quadraticCurveTo(a.x + (endX - a.x) * 0.5, a.y, (a.x + endX) / 2, (a.y + endY) / 2);
+      ctx.lineTo(endX, endY);
+      ctx.strokeStyle = moodColor((a.score + b.score) / 2);
+      ctx.lineWidth = 4;
+      ctx.lineCap = "round";
+      ctx.stroke();
+    }
+  };
+  draw();
+  canvas.onmouseenter = () => {
+    const started = performance.now();
+    const duration = 2300;
+    const animate = (now) => {
+      const t = Math.min(1, (now - started) / duration);
+      draw(1 - Math.pow(1 - t, 3));
+      if (t < 1) requestAnimationFrame(animate);
+    };
+    requestAnimationFrame(animate);
+  };
+  canvas.onmouseleave = () => draw();
 };
 
 const renderThemeLegend = (container, rows, mode) => {
@@ -2014,6 +2018,7 @@ const renderThemesSection = (booksMeta) => {
   renderThemeLegend(mostReadLegend, mostReadRows, "most-read");
   if (highestRatedCanvas) draw3dPie(highestRatedCanvas, highestRatedRows);
   renderThemeLegend(highestRatedLegend, highestRatedRows, "highest-rated");
+  renderMoodGraph(booksMeta);
 };
 
 const setThemesTab = (mode) => {
